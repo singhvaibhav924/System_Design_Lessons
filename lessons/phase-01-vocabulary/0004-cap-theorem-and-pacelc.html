@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAP Theorem and PACELC</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 1 · System-design vocabulary</span> <span>/</span>
+  <span>Lesson 0004</span>
+</nav>
+
+<p class="kicker">Phase 1.4 · Consistency under failure</p>
+<h1>CAP theorem, done properly, and PACELC</h1>
+<p class="subtitle">What a network split forces a replicated database to choose, and the trade-off it still faces when the network is healthy.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~12 min</span>
+  <span><b>Main sources</b> DDIA Ch. 9 · Alex Xu Ch. 6 · Daniel Abadi</span>
+  <span><b>Roadmap topics</b> CAP · linearizability · PACELC</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain CAP without the misleading “pick two” slogan, describe what a database may do on each side of a network split, and use PACELC to ask about latency versus consistency during normal operation.
+</div>
+
+<h2><span class="num">01</span>First, what does “consistency” mean here?</h2>
+<aside class="side">
+  <span class="src">DDIA, Ch. 9, “The Cost of Linearizability” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=358">pp. 358–360</a>
+</aside>
+<p>In CAP, <strong>consistency</strong> means a specific guarantee: <span class="term" data-tip="A read sees the latest completed write, as if every operation happened instantly in one shared order. The fuller treatment comes in Phase 5.">linearizability</span>. If one client writes a new bank balance and gets confirmation, a later read by another client must see that balance or a newer one.</p>
+<p>This is narrower than the word “consistency” in ACID, and narrower than the everyday claim that replicas will eventually converge. When you hear “CAP consistency,” ask which guarantee is meant. Kleppmann uses linearizability for the CAP trade-off.</p>
+
+<h2><span class="num">02</span>CAP is about the moment a network splits</h2>
+<aside class="side">
+  <span class="src">DDIA, Ch. 9 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=358">pp. 358–360</a> ·
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=90">Xu, pp. 90–92</a>
+</aside>
+<p>Picture two data centers that normally exchange writes. A <span class="term" data-tip="A network fault that separates machines or groups of machines so they cannot communicate with each other. It is different from partitioning data into shards.">network partition</span> cuts the link. Both data centers are still running, and users can reach each one, but they cannot coordinate with each other.</p>
+<p>Suppose a client writes a new balance in the east while a client in the west asks for the balance. The west side cannot know whether the east has accepted a newer write. To preserve linearizability, it must wait for the east or return an error. To answer locally right away, it may have to return an old balance or accept a conflicting write.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>During the partition</th><th>What the system prioritizes</th><th>What a user may see</th></tr></thead>
+  <tbody>
+    <tr><td>Consistency (often called CP)</td><td>Do not answer in a way that could violate linearizability</td><td>Some reads or writes wait or fail until coordination is possible</td></tr>
+    <tr><td>Availability (often called AP)</td><td>Keep responding from reachable replicas</td><td>A read may be stale; concurrent writes may need reconciliation later</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The precise CAP statement is: <strong>when a network partition occurs, a system cannot provide both linearizability and total availability for every request to a non-failing node.</strong> It can still provide both when the network is working normally. The forced choice is conditional on the partition.</p>
+
+<div class="callout trap">
+  <span class="label">Why “pick any two” misleads</span>
+  <p>Partition tolerance is not a feature you can switch off in a distributed system; links can fail. You do not choose whether partitions exist. During one, you choose which requests to refuse or delay and which guarantees to relax. So “CA” is not a useful category for a real distributed system that must operate through network faults.</p>
+</div>
+
+<p><strong>Availability also has a formal meaning here:</strong> every request sent to a non-failing node eventually gets a non-error response. It does not simply mean a high uptime percentage. A service that rejects a request because it cannot safely coordinate may be “unavailable” under CAP even if most of the product still works.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>For a payment or inventory reservation, accepting conflicting writes can be worse than briefly rejecting a request. For recommendations, stale data may be acceptable if it keeps the page responsive. This is a product decision about the operation, not a universal database label.</p>
+</div>
+
+<h2><span class="num">03</span>What CAP does not tell you</h2>
+<p>CAP describes a narrow situation: linearizability versus formal availability during a network partition. It does not say that all non-linearizable systems are highly available, or that every system must always be either “CP” or “AP.” A system can have different behavior for different reads, writes, keys, or configuration settings.</p>
+<p>It also does not explain the cost of coordination on an ordinary day. Even without a partition, a write that must be confirmed by a remote replica takes a network round trip. A design that answers from a nearby replica can be faster, but may return older data. That everyday trade-off motivated PACELC.</p>
+
+<h2><span class="num">04</span>PACELC adds the ordinary-day trade-off</h2>
+<aside class="side">
+  <span class="src">Daniel Abadi, “Consistency Tradeoffs in Modern Distributed Database System Design” —</span>
+  <a href="https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf">original paper (PDF)</a>
+</aside>
+<p>PACELC reads as: <strong>if Partition (P), choose between Availability (A) and Consistency (C); Else (E), choose between Latency (L) and Consistency (C).</strong></p>
+
+<div class="figure">
+  <pre>Network partition?   Yes → Availability  ↔  Consistency
+                     No  → Latency        ↔  Consistency</pre>
+  <p class="caption">The arrows show the design tension: getting more of one side may cost you some of the other.</p>
+</div>
+
+<p>For example, a database may accept writes at a nearby replica and synchronize them later. That can keep response times low, but another reader may briefly see the previous value. A database that waits for confirmation from a leader or a quorum can return a more up-to-date value, but the extra coordination adds delay.</p>
+<p>PACELC is a way to describe this design posture; it is not a promise that every operation has one fixed behavior. Abadi’s paper uses pairs such as <strong>PA/EL</strong> to summarize the trade-offs: during partitions favor availability, and otherwise favor latency. The exact guarantees still depend on the database and the operation.</p>
+
+<div class="callout key">
+  <span class="label">A useful design question</span>
+  <p>For each important read or write, ask: “If replicas cannot talk, should this request fail or accept a possibly conflicting/stale result? When replicas can talk, should it wait for stronger freshness or answer faster from nearby data?” That gets you to the actual trade-off instead of stopping at “CP or AP.”</p>
+</div>
+
+<h2><span class="num">05</span>The page in five lines</h2>
+<ol>
+  <li>CAP’s “C” means linearizability here, not every meaning of consistency.</li>
+  <li>“A” means every request to a non-failing node eventually gets a non-error response; it is not uptime.</li>
+  <li>When partitioned, a system must refuse/delay some requests or relax linearizability.</li>
+  <li>“Pick two” is misleading: partitions are a failure condition, not an optional feature.</li>
+  <li>PACELC adds the normal-case question: do you pay coordination latency for stronger consistency, or answer faster with weaker freshness?</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: quick recall check <small>3 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+    <div class="mcq" data-answer="2">
+      <p class="q">Two data centers cannot communicate. A read on the isolated side must return the latest confirmed write. What may the system have to do?</p>
+      <div class="opts">
+        <button>Return its local copy immediately</button>
+        <button>Accept a second conflicting write</button>
+        <button>Wait or return an error</button>
+        <button>Choose to ignore network partitions</button>
+      </div>
+      <p class="why">Without coordination it cannot know whether a newer write exists. To preserve linearizability, it may need to wait or refuse.</p>
+    </div>
+    <div class="mcq" data-answer="1">
+      <p class="q">What does PACELC add to CAP?</p>
+      <div class="opts">
+        <button>It replaces partitions with server and disk failures</button>
+        <button>It adds latency versus consistency during normal operation</button>
+        <button>It says availability wins during every normal period</button>
+        <button>It classifies database models by their replication topology</button>
+      </div>
+      <p class="why">The “E” means “else”: when no partition is occurring, latency and consistency can still trade off.</p>
+    </div>
+    <div class="mcq" data-answer="0">
+      <p class="q">A product says its database is “highly available.” What should you clarify before calling it AP?</p>
+      <div class="opts">
+        <button>What happens to each operation during a network partition</button>
+        <button>Whether it runs on any major cloud provider</button>
+        <button>How many tables the data model currently contains</button>
+        <button>Whether its data model uses relational tables internally</button>
+      </div>
+      <p class="why">CAP availability is a specific per-request guarantee during a partition; ordinary uptime claims do not establish it.</p>
+    </div>
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Sources for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 9, “The Cost of Linearizability”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=357">PDF pp. 357–360</a>). Read this for the careful CAP framing and why “pick two” is misleading.</li>
+    <li><strong>Xu, <em>System Design Interview</em>, Ch. 6, “Design a Key-Value Store”</strong> (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=90">PDF pp. 90–92</a>). Read this for the interview-oriented replica example; use DDIA’s definitions above when its shorthand conflicts.</li>
+    <li><strong>Daniel J. Abadi, <a href="https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf">“Consistency Tradeoffs in Modern Distributed Database System Design”</a></strong>. This introduces PACELC’s latency-versus-consistency branch.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/cap-pacelc.html">CAP and PACELC cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. “Why” questions and “what about my case” questions are welcome. For a quick definition, ask and I’ll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0003-availability-reliability-durability.html">← 0003 · Availability, reliability &amp; durability</a>
+  <a href="0005-partial-failure-timeouts-retries-idempotency.html">Next: 0005 · Partial failure, timeouts &amp; retries →</a>
+</nav>
+
+</main>
+</body>
+</html>

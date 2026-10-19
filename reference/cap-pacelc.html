@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAP and PACELC Cheat Sheet</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; margin:18px 0 28px; }
+  .card { background:var(--surface); border:1px solid var(--rule); border-radius:10px; padding:14px 16px; font-size:16px; break-inside:avoid; }
+  .card h3 { margin:0 0 6px; }
+  .card p { margin:0 0 8px; }
+  .card p:last-child { margin:0; }
+  .card .from { font-family:var(--sans); font-size:12px; color:var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+<p class="kicker">Reference · Phase 1.4</p>
+<h1>CAP and PACELC</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-01-vocabulary/0004-cap-theorem-and-pacelc.html">Lesson 0004</a>.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>CAP’s scope</h3><p>During a network partition, a system cannot guarantee both linearizability and a successful response to every request at every non-failing node.</p><p class="from">DDIA Ch. 9, PDF pp. 358–360</p></div>
+  <div class="card"><h3>C · Consistency</h3><p>In CAP, read/write behavior is linearizable: each operation appears to take effect once, in a shared order.</p></div>
+  <div class="card"><h3>A · Availability</h3><p>Every request sent to a non-failing node eventually returns a non-error response. This is not an uptime percentage.</p></div>
+  <div class="card"><h3>P · Partition</h3><p>A network fault stops groups of machines from communicating. It is not data partitioning/sharding.</p></div>
+  <div class="card"><h3>Favor consistency</h3><p>During a partition, some reads or writes wait or fail rather than risk violating linearizability.</p></div>
+  <div class="card"><h3>Favor availability</h3><p>During a partition, reachable replicas continue answering; responses can be stale or writes may need reconciliation.</p></div>
+  <div class="card"><h3>“Pick two”</h3><p>Misleading. Partitions are not optional. The practical choice is what to do with requests while partitioned.</p></div>
+  <div class="card"><h3>PACELC</h3><p>If Partition: Availability vs Consistency. Else: Latency vs Consistency. It adds the normal-operation coordination cost to CAP.</p><p class="from">Daniel Abadi, “Consistency Tradeoffs…”</p></div>
+</div>
+
+<div class="callout key"><span class="label">Ask per operation</span><p>During a partition, should this read/write wait or fail, or can it use possibly stale/conflicting data? In normal operation, should it wait for stronger freshness or answer faster from a nearby replica?</p></div>
+</main>
+</body>
+</html>

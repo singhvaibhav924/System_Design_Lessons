@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Partial Failure, Timeouts, Retries, and Idempotency</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 1 · System-design vocabulary</span> <span>/</span>
+  <span>Lesson 0005</span>
+</nav>
+
+<p class="kicker">Phase 1.5 · Distributed-systems fundamentals</p>
+<h1>Partial failure, timeouts, retries, and idempotency</h1>
+<p class="subtitle">A request can succeed even when its caller sees an error. That one uncertainty shapes how reliable services communicate.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~16 min</span>
+  <span><b>Main sources</b> DDIA Ch. 8, 7, 11, 12 · Alex Xu Ch. 10</span>
+  <span><b>Roadmap topics</b> partial failure · unreliable networks · timeouts · retries · idempotency</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain why a timeout does not tell you whether a request ran, choose when a retry is appropriate, and describe how an operation ID can prevent a retried request from applying its effect twice.
+</div>
+
+<h2><span class="num">01</span>A distributed system can be partly broken</h2>
+<aside class="side">
+  <span class="src">DDIA, Ch. 8, “Faults and Partial Failures” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=296">PDF pp. 296–299</a>
+</aside>
+<p>On one computer, a failure is often obvious: the program runs, or the computer crashes. With several computers connected by a network, one part can fail while the rest keeps working. Kleppmann calls this a <strong>partial failure</strong>.</p>
+<p>A model server may be healthy while the feature store is unreachable. One database replica may be slow while another still answers. The hard part is that the caller may not know which part failed—or whether anything failed at all.</p>
+<p>Distributed services therefore need to assume that communication can be lost, delayed, or duplicated, and that machines can become slow or unreachable independently. The service must decide what behavior users should see when that happens.</p>
+
+<h2><span class="num">02</span>A timeout says “I stopped waiting,” not “it did nothing”</h2>
+<aside class="side">
+  <span class="src">DDIA, Ch. 8, “Unreliable Networks” and “Timeouts and Unbounded Delays” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=300">PDF pp. 300–306</a>
+</aside>
+<p>Suppose a client sends a request to charge a customer and waits for the result. If no response arrives, several different things may have happened:</p>
+<ul>
+  <li>The request never reached the service.</li>
+  <li>The service received it but has not finished yet.</li>
+  <li>The service completed the charge, but its response was lost or delayed.</li>
+</ul>
+<p>From the client’s point of view, those cases look the same: no response arrived in time. A <strong>timeout</strong> limits how long the client waits. It cannot reveal whether the server completed the operation.</p>
+
+<div class="figure">
+  <pre>client                 service
+  | ---- charge -------> |
+  |                      | charge succeeds
+  | <--- response ---X   | response is lost
+  |                      |
+  | timeout              | the charge already happened</pre>
+  <p class="caption">A timeout describes the caller’s wait. It does not roll back work at the service.</p>
+</div>
+
+<p>Timeouts are necessary because a caller cannot wait forever. But there is no universally correct timeout value. Set it too long and users wait while an unhealthy dependency holds up work. Set it too short and normal variation in network or server response time causes false alarms and unnecessary retries.</p>
+<p>DDIA’s practical advice is to measure response-time variation over time and across machines, then choose a timeout that fits the application’s deadline and tolerance for delay. Treat the timeout as a decision point, not proof that the remote machine is dead.</p>
+
+<div class="callout key">
+  <span class="label">Connection to lesson 0002</span>
+  <p>Response times are a distribution. A timeout that sits below the service’s ordinary slow tail will fire during healthy but slow periods. Choose it from measured behavior and the user-facing deadline, then make the timeout behavior safe.</p>
+</div>
+
+<h2><span class="num">03</span>Retries help with transient faults—and can make overload worse</h2>
+<aside class="side">
+  <span class="src">DDIA, Ch. 7, “Handling Errors and Aborts” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=254">PDF pp. 254–255</a>
+</aside>
+<p>If an operation fails because of a temporary network interruption or a database failover, trying again may work. If it failed because the request is invalid, retrying the same request will not fix it. And if the service is overloaded, more attempts can add load exactly when it has the least spare capacity.</p>
+<p>For a retryable operation, use a <strong>bounded number of attempts</strong> with increasing waits between attempts (<span class="term" data-tip="Each retry waits longer than the one before it, often multiplying the delay. This gives a temporarily unhealthy service time to recover and limits extra traffic.">exponential backoff</span>). Stop when the request’s overall deadline is reached. Retry transient failures; surface permanent failures instead.</p>
+
+<div class="callout trap">
+  <span class="label">A retry can duplicate a successful operation</span>
+  <p>The request may have succeeded and only its response may have been lost. Retrying a payment, counter increment, email send, or job creation can apply the effect twice unless the operation has a duplicate-suppression mechanism.</p>
+</div>
+
+<p>Retries can also multiply across service layers. If a client, gateway, and application each retry several times, a single user action can turn into many calls to an already struggling dependency. Agree on which layer owns retries, cap attempts, and pass one overall deadline through the call chain.</p>
+
+<h2><span class="num">04</span>Idempotency makes repeating an operation safe</h2>
+<aside class="side">
+  <span class="src">DDIA, Ch. 11, “Idempotence” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=500">PDF p. 500</a> ·
+  <span class="src">Ch. 12, “The End-to-End Argument” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=539">PDF pp. 539–542</a>
+</aside>
+<p>An operation is <strong>idempotent</strong> when applying it multiple times has the same final effect as applying it once.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Operation</th><th>Idempotent?</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Set job status to “complete”</td><td>Usually yes</td><td>Repeating the same assignment leaves the same status</td></tr>
+    <tr><td>Increment a counter</td><td>No</td><td>Each retry adds one again</td></tr>
+    <tr><td>Charge $11 to an account</td><td>No, by itself</td><td>A retry can charge another $11</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>For an operation that is not naturally idempotent, give the user action a stable <strong>operation ID</strong>. The client sends the same ID every time it retries that action. The service records the ID alongside the effect, with a uniqueness rule enforced atomically. If that ID arrives again, the service does not repeat the effect; it returns the result associated with the first attempt.</p>
+<p>For example, a payment request carries <code>payment-request-7f31</code>. The service records that ID and the charge in one database transaction. If the response is lost and the client retries with the same ID, the uniqueness check finds the earlier request and prevents a second charge. A new intentional payment gets a new ID.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A model prediction is usually safe to recompute, but creating a training run, writing a feature update, or triggering a paid inference job may have side effects. Give each user-initiated action a stable ID and carry it through the services that record or perform that action. A retry of the same action reuses the ID; a new action gets a new one.</p>
+</div>
+
+<p>This is an <strong>end-to-end</strong> concern. TCP can suppress duplicate packets within one connection, and a database transaction can protect its own writes. Neither one knows that a client reconnecting later is retrying the same business action. The operation ID has to travel from the original caller through to the place that applies the effect.</p>
+
+<h2><span class="num">05</span>“Exactly once” means one visible effect within a boundary</h2>
+<p>Networks cannot promise that a request is delivered exactly once: callers may retry after a response is lost. Systems can combine repeatable attempts with duplicate suppression so the <em>visible effect</em> happens once within a defined boundary. That boundary matters. A database can deduplicate its own write, but an email sent outside that database transaction may still be sent twice.</p>
+<p>So when someone says “exactly once,” ask: exactly once at which step, and across which side effects? Often the practical goal is <strong>at-least-once attempts plus an idempotent or deduplicated effect</strong>, not a magical guarantee from the network.</p>
+
+<h2><span class="num">06</span>A compact way to reason about a remote call</h2>
+<ol>
+  <li><strong>What is the deadline?</strong> Set a timeout that fits the user-facing operation and measured response times.</li>
+  <li><strong>What errors are transient?</strong> Retry only those, with bounded attempts and increasing delays.</li>
+  <li><strong>Can a retry repeat a side effect?</strong> Make the operation naturally idempotent or attach a stable operation ID.</li>
+  <li><strong>Where is the effect recorded?</strong> Enforce deduplication atomically at that boundary, and pass the ID all the way there.</li>
+  <li><strong>What happens after the deadline?</strong> Return a clear failure or status; do not imply that a timeout rolled back the work.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: quick recall check <small>3 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+    <div class="mcq" data-answer="1">
+      <p class="q">A payment client times out after sending a charge. What can it conclude?</p>
+      <div class="opts">
+        <button>The server definitely did not process the charge</button>
+        <button>It does not know whether the charge completed</button>
+        <button>The database automatically rolled back the charge already</button>
+        <button>That remote service is permanently dead for good</button>
+      </div>
+      <p class="why">The request or response may have been lost, or the server may still be working. A timeout only ends the caller’s wait.</p>
+    </div>
+    <div class="mcq" data-answer="2">
+      <p class="q">How should a service retry a temporary failure?</p>
+      <div class="opts">
+        <button>Retry every request without limits or any backoff</button>
+        <button>Retry every error with the same fixed delay</button>
+        <button>Retry transient errors a bounded number of times</button>
+        <button>Retry permanent errors until the user gives up</button>
+      </div>
+      <p class="why">Bounded retries with increasing waits limit extra load. Permanent errors need correction, not repetition.</p>
+    </div>
+    <div class="mcq" data-answer="0">
+      <p class="q">A charge request might be retried after a lost response. What prevents a second charge?</p>
+      <div class="opts">
+        <button>Reuse one operation ID enforced uniquely with charge</button>
+        <button>Give retry a different request ID each time</button>
+        <button>Set the client timeout to a longer duration</button>
+        <button>Send the charge through a faster network route</button>
+      </div>
+      <p class="why">The same stable ID lets the service recognize the retry and suppress the duplicate effect.</p>
+    </div>
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary sources for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 8, “Faults and Partial Failures” and “Unreliable Networks”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=296">PDF pp. 296–306</a>). The model for why remote failure is ambiguous and timeouts have no universally correct value.</li>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 7, “Handling Errors and Aborts”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=254">PDF pp. 254–255</a>). When retries help, when they amplify overload, and why they can duplicate a successful transaction.</li>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 11, “Idempotence”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=500">PDF pp. 500–501</a>) and Ch. 12, “The End-to-End Argument” (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=539">PDF pp. 539–542</a>).</li>
+    <li><strong>Xu, <em>System Design Interview</em>, Ch. 10, “Design a Notification System”</strong> (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=160">PDF pp. 160–161</a>). An interview-scale example of persisted notifications, retries, and duplicate suppression.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/failure-timeouts-retries.html">Failure, timeout, and retry cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. “Why” questions and “what about my case” questions are welcome. For a quick definition, ask and I’ll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0004-cap-theorem-and-pacelc.html">← 0004 · CAP theorem &amp; PACELC</a>
+  <span class="disabled">Next: Phase 2 · Databases (planned)</span>
+</nav>
+
+</main>
+</body>
+</html>
