@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scaling Up, Out, and State</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/sim-session.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 1 · System-design vocabulary</span> <span>/</span>
+  <span>Lesson 0001</span>
+</nav>
+
+<p class="kicker">Phase 1.1 · Scalability</p>
+<h1>Scaling up, scaling out, and why state is the real problem</h1>
+<p class="subtitle">Every "design X for millions of users" answer starts with the ideas on this page.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~15 min</span>
+  <span><b>Main sources</b> Alex Xu Ch. 1 · DDIA Ch. 1 & Part II intro</span>
+  <span><b>Roadmap topics</b> vertical/horizontal scaling, stateless vs stateful, elasticity, bottlenecks, SPOF, fault domains</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Look at a system and say <em>what breaks first when traffic grows 10×</em>, and explain why
+  getting the state out of the servers is what makes "just add more servers" work.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>"Scalable" is not a yes-or-no word</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 1, "Scalability" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=32">open p. 10 in your PDF</a>
+</aside>
+
+<p>People say "X is scalable" all the time. Kleppmann argues that sentence has no meaning by itself:</p>
+
+<blockquote class="quote">
+  It is meaningless to say "X is scalable" or "Y doesn't scale." Rather, discussing scalability means
+  considering questions like "If the system grows in a particular way, what are our options for coping with the growth?"
+  <cite>— Martin Kleppmann, <em>Designing Data-Intensive Applications</em>, p. 10–11</cite>
+</blockquote>
+
+<p>The phrase that matters is <em>grows in a particular way</em>. Before you can talk about scaling, you have to
+say <strong>which number is growing</strong>. Kleppmann calls these numbers
+<span class="term" data-tip="The few numbers that describe how much work your system is doing: requests per second, read:write ratio, number of users online at once, data size, and so on. You pick the ones that matter for your system.">load parameters</span>:
+requests per second, the ratio of reads to writes, how many users are online at once, the cache hit rate,
+and so on. Pick the wrong one and your scaling work fixes the wrong thing.</p>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 1, "Approaches for Coping with Load" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=40">p. 18</a>
+</aside>
+
+<p>His example: a system built for <strong>100,000 requests/sec of 1 kB each</strong> looks nothing like one built for
+<strong>3 requests/minute of 2 GB each</strong>, even though both move about the same amount of data per second.
+The first is about handling many small requests at once. The second is about moving big files.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>An embedding API getting 5,000 short texts per second and a nightly batch job scoring 200 GB of rows
+  can both be called "the model service". They need completely different designs. When someone says
+  "make the model service scale", the first question is: <em>scale in what?</em> More requests? Bigger inputs?
+  More models? Faster responses?</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Two ways to get bigger</h2>
+
+<aside class="side">
+  <span class="src">Alex Xu, Ch. 1, "Vertical scaling vs horizontal scaling" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=9">open in your PDF</a>
+</aside>
+
+<p>When one machine can't keep up, you have two options:</p>
+
+<ul>
+  <li><strong>Scale up (vertical scaling):</strong> swap in a bigger machine with more CPU, RAM, disk or a bigger GPU.</li>
+  <li><strong>Scale out (horizontal scaling):</strong> add more machines and split the work between them.</li>
+</ul>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Scale up (vertical)</th><th>Scale out (horizontal)</th></tr></thead>
+  <tbody>
+    <tr><td>What you do</td><td>Buy a bigger box</td><td>Add more boxes</td></tr>
+    <tr><td>Code changes</td><td>Usually none</td><td>Often big: the work must be splittable</td></tr>
+    <tr><td>Ceiling</td><td>Hard limit: the biggest machine you can buy</td><td>Much higher; keep adding machines</td></tr>
+    <tr><td>Cost curve</td><td>Grows <em>faster</em> than size: 2× machine costs well over 2×</td><td>Roughly linear, using cheap standard machines</td></tr>
+    <tr><td>If it dies</td><td>Everything is down. It's a single point of failure</td><td>The others keep going (if designed for it)</td></tr>
+    <tr><td>New problems</td><td>Few</td><td>Coordination, consistency, partial failure, network trouble</td></tr>
+  </tbody>
+</table>
+</div>
+
+<aside class="side">
+  <span class="src">DDIA, Part II intro, "Scaling to Higher Load" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=168">p. 146</a>
+</aside>
+
+<p>Two details from the books are worth remembering, because candidates often get them wrong:</p>
+
+<p><strong>1. A bigger machine is not proportionally better.</strong> Kleppmann notes that a machine with twice the CPUs,
+RAM and disk "typically costs significantly more than twice as much", and that because of internal bottlenecks
+"a machine twice the size cannot necessarily handle twice the load."</p>
+
+<p><strong>2. Scaling out has its own price.</strong> Spreading work across machines that don't share memory or disk is
+called a <span class="term" data-tip="A setup where each machine (node) has its own CPU, RAM and disk, and machines coordinate only by sending messages over the network. This is what people usually mean by horizontal scaling.">shared-nothing architecture</span>.
+Each machine is called a <span class="term" data-tip="One machine (or virtual machine) in a group of machines that work together. 'A 5-node cluster' = 5 machines.">node</span>.
+It lets you use cheap hardware and survive losing a whole data center. But the nodes can only coordinate over
+a network, and networks are slow and unreliable. Most of this course (Phases 2–5) exists because of that one fact.</p>
+
+<div class="callout key">
+  <span class="label">The mature take</span>
+  <p>Scaling up is not the "junior" answer. Xu points out that Stack Overflow in 2013 served 10M+ monthly visitors
+  with <strong>one</strong> main database server. Kleppmann notes that the common advice "until recently was to keep your
+  database on a single node (scale up) until scaling cost or high-availability requirements forced you to make it
+  distributed." Real systems mix both. In an interview, the strong move is to <em>say why</em> you're scaling out,
+  not to assume you must.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Bottlenecks, single points of failure, and fault domains</h2>
+
+<p>Before adding anything, ask two questions about the current design.</p>
+
+<h3>What is the bottleneck?</h3>
+<p>A request usually passes through several parts in a row: load balancer → web server → database. The whole path can
+only go as fast as its <strong>slowest part</strong>. That part is the <em>bottleneck</em>. If the database is at 100% CPU,
+doubling your web servers just means twice as many servers waiting on the same database. Scaling anything other than
+the bottleneck is wasted money.</p>
+
+<div class="callout trap">
+  <span class="label">Common interview trap</span>
+  <p>Drawing "add more servers behind a load balancer" when the scaling problem is in the database. The web tier is
+  usually the <em>easy</em> part to scale (you'll see why in section 04). The data tier is where the hard problems are.</p>
+</div>
+
+<h3>What is a single point of failure?</h3>
+<aside class="side">
+  <span class="src">Xu quotes the definition in Ch. 1, "Cache" section</span>
+</aside>
+<p>Xu uses the standard definition: a <strong>single point of failure (SPOF)</strong> is "a part of a system that, if it fails,
+will stop the entire system from working." One web server, one database, one cache box or one load balancer: each is a SPOF
+if nothing takes over when it dies. The fix is <strong>redundancy</strong>: two or more copies, plus a way to switch over,
+called <span class="term" data-tip="Automatically moving work to a backup when the main component fails. Example: the main database dies, and a copy is promoted to take its place." data-later="Phase 1.3 · Availability, and Phase 2.3 · Replication">failover</span>.
+Xu's one-line summary of the chapter: <em>"Build redundancy at every tier."</em></p>
+
+<h3>Do my copies fail together?</h3>
+<aside class="side">
+  This term comes from cloud providers, not the two books. AWS's version:
+  <a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html">Regions and Availability Zones</a>.
+</aside>
+<p>Redundancy only helps if the copies don't all fail for the same reason. A <strong>fault domain</strong> is a group of things
+that go down together: the same rack (shared power and network switch), the same building, the same
+<span class="term" data-tip="A cloud provider's name for one or more separate data centers inside a region, with independent power, cooling and networking. Spreading copies across zones protects you from one building going down.">availability zone</span>,
+the same region. Two database copies on two servers in the same rack still count as one fault domain, so one power failure
+takes out both. That's why Xu's design eventually spreads across multiple data centers.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>The real problem: where does the state live?</h2>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 1, "Stateless web tier" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=20">open in your PDF</a>
+</aside>
+
+<p>This is the most important idea on the page. <strong>State</strong> is any data a server has to remember between one
+request and the next: who is logged in, what's in someone's cart, a user's chat history.</p>
+
+<ul>
+  <li>A <strong>stateful server</strong> keeps that data in its own memory or disk. Asha logged in through Server 1, so only Server 1 knows her.</li>
+  <li>A <strong>stateless server</strong> keeps nothing between requests. It reads what it needs from a shared store every time.</li>
+</ul>
+
+<p>With stateful servers, every request from Asha <em>has</em> to go back to Server 1. Load balancers can do this with
+<span class="term" data-tip="A load balancer setting that always sends the same user to the same server, usually by setting a cookie. It keeps stateful servers working, but makes adding, removing or losing servers painful." data-later="Phase 8 · Load balancing">sticky sessions</span>,
+but Xu notes the cost: "Adding or removing servers is much more difficult with this approach. It is also challenging to handle server failures."</p>
+
+<p>Try it below. Each user is already logged in. Click their names to send requests, crash servers, add servers, and switch between the two designs.</p>
+
+<div class="figure wide">
+  <div class="sim-session" data-mode="memory"></div>
+  <div class="caption">
+    Things to notice: (1) with sessions in server memory and no stickiness, the second click on any user logs them out.
+    (2) Turn on sticky sessions: everything works, until you crash a server and its users lose their sessions.
+    (3) Add a server in memory mode: it knows nobody. (4) Switch to "Shared store" and do all of the above. Nobody gets logged out.
+  </div>
+</div>
+
+<p>In the stateless design the servers become <strong>interchangeable</strong>. Any server can handle any request, so you
+can add servers, remove them or lose them without anyone noticing. This is why Xu's first rule for scaling is
+<em>"Keep web tier stateless."</em></p>
+
+<div class="callout key">
+  <span class="label">The part most people miss</span>
+  <p>Stateless doesn't mean the state disappeared. <strong>It moved</strong> into a shared store: a database, or something like
+  <span class="term" data-tip="A very fast in-memory data store, often used for sessions and caching. Think of it as a giant shared dictionary that lives on its own servers." data-later="Phase 3 · Caching">Redis</span>.
+  The web tier became easy to scale because all the hard parts went into the data tier. Kleppmann says it directly:
+  spreading stateless services across machines is "fairly straightforward", but taking stateful data systems from one node
+  to many "can introduce a lot of additional complexity." That's why the next several phases of this course
+  (databases, caching, queues, distributed systems) are all about <em>the place the state went</em>.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Elasticity: scaling by itself</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 1 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=39">p. 17</a>
+</aside>
+
+<p>An <strong>elastic</strong> system adds and removes machines automatically as load changes. Most clouds call this
+<strong>autoscaling</strong>. Once the web tier is stateless, autoscaling it is easy, because a new server is useful the moment it starts.
+With stateful servers, a new server starts empty and helps nobody until users get moved to it.</p>
+
+<p>Kleppmann adds a caveat people forget: elastic systems help when load is unpredictable, but
+"manually scaled systems are simpler and may have fewer operational surprises." Automatic scaling is a tool with its own
+failure modes. It isn't always better.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A model inference server is usually <strong>stateless</strong>. The model weights are read-only and every replica has the
+  same copy, so serving scales out nicely behind a load balancer. Two ML-specific twists:
+  (1) a new replica may take minutes to download and load the weights onto a GPU. That's a
+  <span class="term" data-tip="The delay before a freshly started server can do useful work, e.g. loading a 10 GB model onto a GPU. It makes reacting to sudden traffic spikes slow.">cold start</span>,
+  so autoscaling reacts slowly to sudden spikes. (2) GPUs make scaling up (a bigger GPU) a common first step.
+  Truly stateful parts of ML systems, like per-user conversation history, feature stores and the LLM
+  <span class="term" data-tip="Memory an LLM server keeps during generation so it doesn't recompute earlier tokens. It is state tied to one request on one server." data-later="Phase 13 · ML system design (LLM serving)">KV cache</span>,
+  are where ML serving gets hard. The same lesson again.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>The map: how one server becomes millions of users</h2>
+
+<aside class="side">
+  <span class="src">This is the whole of Xu Ch. 1 in one list —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=5">read it from the start</a>.
+  It's the best 30-page overview in your resources folder.
+</aside>
+
+<p>Xu's Chapter 1 walks one system from a single server to millions of users. Here is the whole path, so you can see where
+today's ideas fit and what's coming later. Steps marked <span class="badge now">today</span> are covered on this page.
+Purple badges are later phases. You only need to know that they exist for now.</p>
+
+<ol class="ladder">
+  <li class="here"><span class="dot">1</span><span class="step-title">One server does everything <span class="badge now">today</span></span>
+    <span class="step-body">Web app, database and cache on one box. Simple, and a single point of failure.</span></li>
+  <li class="here"><span class="dot">2</span><span class="step-title">Split the web tier from the data tier <span class="badge now">today</span></span>
+    <span class="step-body">Separate machines, so each can be scaled on its own.</span></li>
+  <li class="here"><span class="dot">3</span><span class="step-title">Load balancer + several web servers <span class="badge now">today</span></span>
+    <span class="step-body">Scale out the web tier and remove its SPOF. <span class="badge later">Phase 8 for details</span></span></li>
+  <li><span class="dot">4</span><span class="step-title">Database replication</span>
+    <span class="step-body">One primary takes writes, copies serve reads, and a copy takes over if the primary dies. <span class="badge later">Phase 2.3</span></span></li>
+  <li><span class="dot">5</span><span class="step-title">Cache tier</span>
+    <span class="step-body">Keep hot data in memory so the database does less work. <span class="badge later">Phase 3</span></span></li>
+  <li><span class="dot">6</span><span class="step-title">CDN for static files</span>
+    <span class="step-body">Images, JS and CSS served from servers near the user. <span class="badge later">Phase 8</span></span></li>
+  <li class="here"><span class="dot">7</span><span class="step-title">Stateless web tier <span class="badge now">today</span></span>
+    <span class="step-body">Sessions move to a shared store, which makes autoscaling possible.</span></li>
+  <li><span class="dot">8</span><span class="step-title">Multiple data centers</span>
+    <span class="step-body">Route users to the nearest one, and send everyone to a healthy one if a data center fails. Introduces data-sync problems. <span class="badge later">Phases 2 & 5</span></span></li>
+  <li><span class="dot">9</span><span class="step-title">Message queue</span>
+    <span class="step-body">Slow work (like photo processing) goes on a queue so producers and workers scale separately. <span class="badge later">Phase 4</span></span></li>
+  <li><span class="dot">10</span><span class="step-title">Logging, metrics, automation</span>
+    <span class="step-body">You can't run what you can't see. <span class="badge later">Phase 9</span></span></li>
+  <li><span class="dot">11</span><span class="step-title">Shard the database</span>
+    <span class="step-body">Split the data itself across machines, which is scaling out the data tier. <span class="badge later">Phase 2.3</span></span></li>
+</ol>
+
+<p>Notice the shape: steps 1–3 and 7 are about the web tier and are fairly mechanical. Almost everything else is about
+<em>data</em>. That matches what section 04 predicted.</p>
+
+<p>One roadmap item, <span class="term" data-tip="Working out ahead of time how many servers, how much storage and how much bandwidth you'll need for a given load, with some margin for peaks and growth." data-later="Phase 15 · Capacity estimation">capacity planning</span>,
+is mentioned here and skipped on purpose. It's the arithmetic side of scaling ("how many servers for 23K requests/sec?") and gets its own phase.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The page in five lines</h2>
+
+<ol>
+  <li><strong>Scalability is a question, not a label:</strong> "if <em>this</em> load parameter grows, what are our options?"</li>
+  <li><strong>Scale up</strong> is simple but hits a ceiling, costs more than linearly, and is a SPOF. <strong>Scale out</strong> has a much higher ceiling but brings network and coordination problems. Real systems mix both.</li>
+  <li><strong>Find the bottleneck first.</strong> Scaling anything else is wasted.</li>
+  <li><strong>Redundancy only counts across fault domains.</strong> Copies that fail together are really one copy.</li>
+  <li><strong>Stateless servers are interchangeable</strong>, so they scale and autoscale easily. The state moved to the data tier, and that's where the hard problems (and most of this course) are.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded, just helps it stick</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">You have 4 web servers and the database is at 100% CPU. Traffic doubles. Adding 4 more web servers will most likely…</p>
+      <div class="opts">
+        <button>double capacity since load spreads evenly</button>
+        <button>change little; the database caps throughput</button>
+        <button>cut latency in half for users</button>
+        <button>remove the single point of failure</button>
+      </div>
+      <p class="why">The slowest part limits the whole path. More web servers just means more servers waiting on the same overloaded database.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Why is it hard to autoscale a web tier that keeps login sessions in each server's memory?</p>
+      <div class="opts">
+        <button>new servers don't know existing users</button>
+        <button>autoscaling only works for database servers</button>
+        <button>sessions make every request much slower</button>
+        <button>load balancers cannot route to sessions</button>
+      </div>
+      <p class="why">A new server starts with empty memory, so any logged-in user sent to it gets logged out. Moving sessions to a shared store fixes this.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">According to Kleppmann, which is true about scaling up?</p>
+      <div class="opts">
+        <button>cost grows roughly linearly with machine size</button>
+        <button>doubling the machine always doubles the capacity</button>
+        <button>cost grows faster than the machine's size</button>
+        <button>it removes single points of failure entirely</button>
+      </div>
+      <p class="why">A 2× machine usually costs well over 2×, and because of internal bottlenecks it may not handle 2× the load either.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Your two database copies run on two servers in the same rack, sharing one power supply. What's the problem?</p>
+      <div class="opts">
+        <button>they sit in the same fault domain</button>
+        <button>replicas must run different database software</button>
+        <button>the rack makes replication far too slow</button>
+        <button>two replicas is below the legal minimum</button>
+      </div>
+      <p class="why">One power failure takes out both. Redundancy only helps if the copies fail independently.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A "stateless web tier" means…</p>
+      <div class="opts">
+        <button>the system stores no user data anywhere</button>
+        <button>servers keep state in a shared store</button>
+        <button>every request must carry the full database</button>
+        <button>servers restart after every single user request</button>
+      </div>
+      <p class="why">The state still exists. It lives in a shared database or cache instead of inside each web server, so the servers are interchangeable.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Alex Xu, <em>System Design Interview</em>, Chapter 1: "Scale from Zero to Millions of Users"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=5">open</a>). Read the whole chapter.
+      It's short, and this lesson was the first half of it with the reasoning filled in.</li>
+    <li>Then: <strong>Kleppmann, <em>DDIA</em>, Ch. 1, "Scalability" → "Approaches for Coping with Load"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=32">pp. 10–18</a>).
+      Skip the Twitter example and the percentiles for now. They're the next lesson.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/scalability.html">Scalability cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. I'm your teacher for this, so "why" questions, "what about my case" questions and half-formed confusion
+  are all welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code> without cluttering the lessons.
+</div>
+
+<nav class="pager">
+  <a href="../../index.html">← Course index</a>
+  <a href="0002-latency-throughput-percentiles.html">Next: 0002 · Latency, throughput & percentiles →</a>
+</nav>
+
+</main>
+</body>
+</html>

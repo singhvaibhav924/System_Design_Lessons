@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Availability, Reliability, Durability</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/avail-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 1 · System-design vocabulary</span> <span>/</span>
+  <span>Lesson 0003</span>
+</nav>
+
+<p class="kicker">Phase 1.3 · Availability</p>
+<h1>Availability, reliability, durability, and what the "nines" really cost</h1>
+<p class="subtitle">Three promises that sound alike and aren't, and how teams turn them into numbers they can manage.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~18 min</span>
+  <span><b>Main sources</b> DDIA Ch. 1 "Reliability" · Google SRE book (SLOs, Embracing Risk) · Xu Ch. 2</span>
+  <span><b>Roadmap topics</b> availability, reliability, durability, SLA/SLO/SLI, error budgets, nines, downtime, graceful degradation, failover</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Tell availability, reliability and durability apart. Turn "four nines" into real minutes. Work out the availability of a
+  chain of services (and see why it's lower than you'd expect). Explain SLIs, SLOs, SLAs and error budgets the way an SRE would.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Three different promises</h2>
+
+<p>The roadmap's warning: <em>99.9% availability ≠ 99.9% reliability ≠ 99.9% durability.</em> Each word answers a different question.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>The question it answers</th><th>Measured as</th></tr></thead>
+  <tbody>
+    <tr><td>Availability</td><td>Can I use it <em>right now</em>?</td><td>Fraction of time it's up, or fraction of requests that succeed</td></tr>
+    <tr><td>Reliability</td><td>Does it keep working <em>correctly</em>, even when things go wrong?</td><td>Correct results, at the needed speed, despite faults</td></tr>
+    <tr><td>Durability</td><td>Once I've stored data, will it <em>still be there</em> later?</td><td>Probability of not losing data over a period (usually a year)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 1, "Reliability" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=28">p. 6</a>
+</aside>
+
+<p><strong>Reliability</strong> is the broadest. Kleppmann defines it as, roughly, "continuing to work correctly, even when things go wrong."
+"Correctly" includes doing the right thing, at good-enough performance, and without letting attackers in. So reliability covers more than
+being up: a system that answers instantly with wrong data is <em>available</em> but not <em>reliable</em>.</p>
+
+<aside class="side">
+  <span class="src">AWS,</span> <a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/DataDurability.html">S3 data durability</a>
+</aside>
+
+<p>The cleanest real example of availability and durability being different is <strong>Amazon S3</strong>. AWS says S3 Standard is
+"designed to provide 99.999999999% durability and 99.99% availability of objects over a given year." That's 11 nines of
+durability and only 4 nines of availability. S3 may be unreachable for close to an hour a year, but data you've stored there is
+almost never lost. It becomes reachable again later; it doesn't disappear. A
+<span class="term" data-tip="A fast in-memory store that keeps copies of data to avoid slow lookups." data-later="Phase 3 · Caching">cache</span>
+is the opposite: it can be highly available with <em>zero</em> durability, because losing its contents is allowed by design.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Chip Huyen points out that "ML systems often fail silently." A model server can return HTTP 200 with fast, confident, wrong
+  predictions (for example, after the input data changed). Every uptime dashboard says 100% available. The system is still not
+  <em>reliable</em>. For ML, availability is the easy part. Correctness needs its own monitoring.
+  <span class="src" style="font-family:var(--sans);font-size:13px;color:var(--ink-3)">(DMLS Ch. 8, <a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=247">p. 227</a>)</span></p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Faults vs failures</h2>
+
+<aside class="side">
+  <span class="src">DDIA —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=29">pp. 7–10</a>
+</aside>
+
+<p>Kleppmann makes one distinction that the rest of system design builds on:</p>
+<ul>
+  <li>A <strong>fault</strong> is one <em>component</em> misbehaving: a disk dies, a process crashes, one request times out.</li>
+  <li>A <strong>failure</strong> is the <em>whole system</em> no longer giving users the service they need.</li>
+</ul>
+<p>You can't get faults to zero, so the goal is to stop faults from becoming failures. A system that can do that is called
+<strong>fault-tolerant</strong>. It only tolerates <em>certain</em> faults, though. As Kleppmann puts it, surviving Earth being "swallowed by
+a black hole" would require "web hosting in space — good luck getting that budget item approved."</p>
+
+<h3>Three sources of faults, and why the third type is the dangerous one</h3>
+<ol>
+  <li><strong>Hardware faults.</strong> Disks have a mean time to failure of about 10–50 years, so "on a storage cluster with 10,000 disks,
+  we should expect on average one disk to die per day." These faults are mostly <em>random and independent</em>, so redundancy
+  handles them well.</li>
+  <li><strong>Software errors.</strong> These are <em>correlated</em>: the same bug runs on every server. A leap second on 30 June 2012
+  "caused many applications to hang simultaneously" because of a Linux kernel bug. Other examples include a runaway process eating shared
+  resources, a slow dependency, and <span class="term" data-tip="A small failure that overloads or breaks the next component, which breaks the next, and so on, until a large part of the system is down." data-later="Phase 9 · Reliability engineering">cascading failures</span>.</li>
+  <li><strong>Human errors.</strong> One study found "configuration errors by operators were the leading cause of outages," while hardware played
+  a role in only 10–25% of them. The fixes are good defaults, sandboxes, testing, quick rollback, gradual rollouts and good monitoring.</li>
+</ol>
+
+<div class="callout key">
+  <span class="label">The connection to lesson 0001</span>
+  <p>Redundancy (extra copies) protects against <em>independent</em> faults. It does nothing against <em>correlated</em> ones: a bad deploy or a
+  poison input crashes every copy at once. That's the same lesson as fault domains, applied to software. When someone says
+  "we have 3 replicas, so we're safe", ask: <em>safe from what?</em></p>
+</div>
+
+<p>Kleppmann also mentions a counter-intuitive practice: deliberately <em>causing</em> faults, e.g. randomly killing processes, so that the
+recovery machinery is exercised all the time. Netflix's
+<span class="term" data-tip="A Netflix tool that randomly shuts down production servers during working hours, so engineers must build systems that survive it.">Chaos Monkey</span>
+is the best-known example.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>The nines, in real minutes</h2>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 2, "Availability numbers" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=38">open in your PDF</a>
+</aside>
+
+<p>Availability is written as a percentage, and people talk about the number of nines: 99.9% is "three nines". Xu notes that cloud providers
+(Amazon, Google, Microsoft) "set their SLAs at 99.9% or above." The percentages all look close together, so it helps to convert them into
+time:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Availability</th><th>Down per year</th><th>Per month</th><th>Per day</th></tr></thead>
+  <tbody>
+    <tr><td>99% (two nines)</td><td>3.65 days</td><td>7.2 hours</td><td>14.4 min</td></tr>
+    <tr><td>99.9% (three)</td><td>8.76 hours</td><td>43.2 min</td><td>1.44 min</td></tr>
+    <tr><td>99.99% (four)</td><td>52.6 min</td><td>4.32 min</td><td>8.6 s</td></tr>
+    <tr><td>99.999% (five)</td><td>5.26 min</td><td>26 s</td><td>0.86 s</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Each extra nine cuts the allowed downtime by 10×. A useful rule of thumb: at <strong>five nines</strong> you have about five minutes a year,
+which is less time than it takes a person to notice an alert, log in and start investigating. So five-nines systems have to recover
+<em>automatically</em>. A human in the loop alone uses up the budget.</p>
+
+<div class="figure wide">
+  <div class="nines-calc"></div>
+  <div class="caption">Pick a target or type one. The last line shows the same target counted in failed requests instead of minutes (section 05 explains why that matters).</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Combining parts: chains lose nines, copies add them</h2>
+
+<p>A real request passes through many components. Their availabilities combine in two ways:</p>
+
+<ul>
+  <li><strong>In series</strong> (every part must work, e.g. gateway → API → feature store → model): <strong>multiply</strong> the availabilities.
+  Four services at 99.9% each give 0.999<sup>4</sup> ≈ <strong>99.6%</strong>, which is about 35 hours of downtime a year instead of 8.8.
+  <em>A chain is always less available than its weakest link.</em></li>
+  <li><strong>In parallel</strong> (any one copy is enough, e.g. two replicas behind a load balancer): the system is down only when <em>all</em>
+  copies are down, so it's <code>1 − (1 − a)<sup>k</sup></code>. Two copies at 99% each give 1 − 0.01² = <strong>99.99%</strong>.
+  <em>Copies add nines.</em></li>
+</ul>
+
+<div class="figure wide">
+  <div class="composite-calc"></div>
+  <div class="caption">
+    Things to notice: (1) with 1 copy, adding services to the chain steadily removes nines.
+    (2) Going to 2 copies brings it back, even with a long chain.
+    (3) Untick "fail independently": now the copies share the same bug or rack, and the extra copies stop helping.
+  </div>
+</div>
+
+<div class="callout trap">
+  <span class="label">The fine print</span>
+  <p>The parallel formula assumes copies fail <em>independently</em> and that switching between them
+  (<span class="term" data-tip="Automatically moving traffic or the 'main' role to a healthy copy when the current one fails." data-later="Phase 2.3 · Replication (database failover) and Phase 9 · Reliability">failover</span>)
+  works instantly and correctly. In practice, failover is itself a component that can fail, and correlated faults (section 02) are common.
+  Treat the math as a <em>best case</em>. It's very useful for spotting the weak link, not for promising customers a number.</p>
+</div>
+
+<h3>Two ways to improve availability</h3>
+<p>Availability depends on how often things break <em>and</em> how long they stay broken. The standard reliability-engineering formula:</p>
+<pre>availability  =  MTBF / (MTBF + MTTR)
+  MTBF = mean time between failures  (how often it breaks)
+  MTTR = mean time to recovery       (how long it stays broken)</pre>
+<p>A service that fails once a month (720 hours) and takes 1 hour to fix is 99.86% available. Cut the fix to 5 minutes and it's 99.988%,
+almost another nine, <em>without failing any less often</em>. This is why fast detection, automatic failover, quick rollback and
+the ability to restart cleanly matter as much as preventing failures.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>SLI, SLO, SLA: how teams put numbers on it</h2>
+
+<aside class="side">
+  <span class="src">Google SRE book,</span>
+  <a href="https://sre.google/sre-book/service-level-objectives/">Ch. 4 "Service Level Objectives"</a>.
+  Free online, and the standard reference for this vocabulary.
+</aside>
+
+<p>These three terms show up constantly in interviews and on-call life. The Google SRE book's definitions:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>What it is</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>SLI<br><small style="font-weight:400;color:var(--ink-3)">indicator</small></td><td>"a carefully defined quantitative measure of some aspect of the level of service"</td><td>Fraction of requests that succeed in under 300 ms</td></tr>
+    <tr><td>SLO<br><small style="font-weight:400;color:var(--ink-3)">objective</small></td><td>"a target value or range of values for a service level that is measured by an SLI"</td><td>That fraction ≥ 99.9% over a rolling 30 days</td></tr>
+    <tr><td>SLA<br><small style="font-weight:400;color:var(--ink-3)">agreement</small></td><td>"an explicit or implicit contract with your users that includes consequences"</td><td>Below 99.5% in a month → customers get a 10% credit</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The SRE book's test for SLO vs SLA: ask <em>"what happens if the SLOs aren't met?"</em> If the answer involves money or penalties, it's an SLA.
+Teams usually set the internal SLO <em>stricter</em> than the external SLA, so they get warned before they owe anyone money.</p>
+
+<h3>Measuring availability: by time or by requests</h3>
+<p>The classic definition is time-based: the share of time the service was up. The SRE book prefers the request-based version for
+large systems: "the fraction of well-formed requests that succeed, sometimes called <em>yield</em>." The reason is that a big distributed
+system is rarely <em>completely</em> down. It's usually <em>partly</em> down: one shard, one region, 3% of requests failing. Time-based
+uptime can't express "3% broken for 2 hours". Request-based availability can.</p>
+
+<p>The SRE book's advice on choosing SLOs: "Don't pick a target based on current performance", "Keep it simple", "Avoid absolutes",
+and "Have as few SLOs as possible."</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>Error budgets: unreliability you're allowed to spend</h2>
+
+<aside class="side">
+  <span class="src">Google SRE book,</span>
+  <a href="https://sre.google/sre-book/embracing-risk/">Ch. 3 "Embracing Risk"</a>
+</aside>
+
+<p>The SRE book states flatly that "100% is probably never the right reliability target." Two reasons:</p>
+<ul>
+  <li><strong>Users can't tell.</strong> "A user on a 99% reliable smartphone cannot tell the difference between 99.99% and 99.999% service
+  reliability!" Their phone, Wi-Fi and mobile network fail far more often than your service does.</li>
+  <li><strong>Each nine costs more and slows you down.</strong> More redundancy, more process, fewer and more careful releases.</li>
+</ul>
+
+<p>So the SLO also defines how much failure is <em>acceptable</em>. That gap is the <strong>error budget</strong>:
+<code>error budget = 1 − SLO</code>. A 99.9% SLO over 30 days gives a budget of 43 minutes, or, counted by requests, 1 failed request in
+every 1,000. In the book's words, it's "the 'budget' of how much 'unreliability' is remaining."</p>
+
+<p>The budget turns a recurring argument between product teams ("ship faster!") and operations ("stop breaking things!") into a rule:</p>
+<ul>
+  <li>Budget left → releases go out and risky experiments are fine.</li>
+  <li>Budget used up → "releases are temporarily halted" and the team works on reliability until it's back within the SLO.</li>
+</ul>
+
+<div class="callout key">
+  <span class="label">A story worth remembering</span>
+  <p>Google's internal lock service, Chubby, was so reliable that other teams started assuming it could <em>never</em> go down and built in
+  hard dependencies on it, so when it did fail, they failed too. So SRE made sure Chubby "meets, but does not significantly exceed, its
+  service level objective". In a quarter with no real outage, they <strong>deliberately took it down</strong> to expose those hidden
+  dependencies. Being <em>more</em> available than you promise can be a problem too.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>Graceful degradation: failing partly instead of completely</h2>
+
+<p>The last tool from this part of the roadmap. <strong>Graceful degradation</strong> means that when a part fails, the system keeps
+working in a <em>reduced</em> form instead of returning errors. A product page with a broken "recommended for you" panel should still let
+people buy the product. If the personalisation service is down, show the generic bestseller list. If search is slow, return fewer, cached
+results.</p>
+
+<p>This connects back to faults vs failures: a broken component (fault) only becomes a user-facing failure if the design lets it.
+Graceful degradation is a deliberate design decision about <em>which</em> features may break without taking the important ones with them.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Chip Huyen calls the ML version <strong>"smooth failing"</strong>: companies keep "a backup system that is less optimal than the main system
+  but is guaranteed to generate predictions quickly". That could be heuristics, a simple model or "cached precomputed predictions". The rule is
+  then "if the main model takes longer than X milliseconds to generate predictions, use the backup model instead." This is graceful degradation
+  for model serving, and it's a strong thing to mention in ML system design interviews.
+  <span style="font-family:var(--sans);font-size:13px;color:var(--ink-3)">(DMLS Ch. 11, <a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=354">p. 334</a>)</span></p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">08</span>The page in five lines</h2>
+
+<ol>
+  <li><strong>Availability</strong> = can I use it now. <strong>Reliability</strong> = does it work <em>correctly</em> despite faults. <strong>Durability</strong> = is stored data kept. S3: 11 nines durable, 4 nines available.</li>
+  <li>A <strong>fault</strong> is one component breaking. A <strong>failure</strong> is the whole system letting users down. Redundancy handles independent faults, not correlated ones (bugs, bad configs).</li>
+  <li>Each nine = 10× less downtime. 99.9% ≈ 8.8 h/year, 99.99% ≈ 53 min, 99.999% ≈ 5 min, which leaves no time for a human to fix things.</li>
+  <li><strong>Series multiplies</strong> (chains lose nines). <strong>Parallel adds nines</strong> (1 − (1 − a)<sup>k</sup>) if failures are independent. Availability = MTBF / (MTBF + MTTR), so faster recovery counts as much as fewer failures.</li>
+  <li><strong>SLI</strong> = the measure, <strong>SLO</strong> = the target, <strong>SLA</strong> = the contract with penalties. <strong>Error budget</strong> = 1 − SLO, spent on releases and frozen when used up. Never aim for 100%.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A model API returns fast HTTP 200 responses, but its predictions became wrong after an upstream data change. It is…</p>
+      <div class="opts">
+        <button>unavailable but still fully reliable for users</button>
+        <button>available but no longer reliable for users</button>
+        <button>durable but no longer available for users</button>
+        <button>reliable but no longer durable for users</button>
+      </div>
+      <p class="why">It's up and answering (available), but not working correctly (not reliable). This is the "silent failure" of ML systems.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">A request passes through 3 services, each 99.9% available, with no redundancy. The overall availability is about…</p>
+      <div class="opts">
+        <button>99.9%, same as each single service</button>
+        <button>99.97%, slightly better than each service</button>
+        <button>99.7%, worse than any single service</button>
+        <button>96.7%, roughly three times the downtime</button>
+      </div>
+      <p class="why">In series, multiply: 0.999³ ≈ 0.997. A chain is less available than its weakest link.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">You run 3 replicas of a service, all deployed with the same release. A bad release goes out. What protects you?</p>
+      <div class="opts">
+        <button>gradual rollout and quick rollback, not replicas</button>
+        <button>the three replicas, since one will survive</button>
+        <button>a higher SLA written into the contract</button>
+        <button>moving the three replicas into separate racks</button>
+      </div>
+      <p class="why">A bug is a correlated fault: every replica runs the same code and fails the same way. Redundancy doesn't help, but limiting how many users see a release, and undoing it fast, does.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">What is the key difference between an SLO and an SLA?</p>
+      <div class="opts">
+        <button>an SLO measures latency, an SLA measures uptime</button>
+        <button>an SLA is internal, an SLO is external</button>
+        <button>an SLO is yearly, an SLA is monthly</button>
+        <button>an SLA has consequences if it is missed</button>
+      </div>
+      <p class="why">The SRE book's test: "what happens if the SLOs aren't met?" If there are penalties, such as refunds or credits, it's an SLA.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">Your SLO is 99.9% of requests succeeding over 30 days. Halfway through the month, failed requests have already used up the whole month's error budget. The error-budget policy says…</p>
+      <div class="opts">
+        <button>keep shipping; the month is only half over</button>
+        <button>pause risky releases and work on reliability instead</button>
+        <button>raise the SLO so the team tries harder</button>
+        <button>lower the SLO until the month is over</button>
+      </div>
+      <p class="why">The budget is spent, so releases are halted and the team works on reliability until the service is back within its SLO.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary sources for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 1, "Reliability"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=28">pp. 6–10</a>).
+      Short, and the faults-vs-failures framing comes back in every later chapter.</li>
+    <li><strong>Google SRE book, <a href="https://sre.google/sre-book/embracing-risk/">"Embracing Risk"</a> and
+      <a href="https://sre.google/sre-book/service-level-objectives/">"Service Level Objectives"</a></strong>. Free online.
+      The source for error budgets, and worth reading in full.</li>
+    <li>Skim: <strong>Huyen, <em>DMLS</em>, Ch. 8, "Causes of ML System Failures"</strong>
+      (<a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=246">p. 226</a>). The ML view of failures.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/availability.html">Availability cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0002-latency-throughput-percentiles.html">← 0002 · Latency, throughput &amp; percentiles</a>
+  <span class="disabled">Next: 0004 · CAP theorem, done properly, and PACELC (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

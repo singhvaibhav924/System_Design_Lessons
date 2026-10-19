@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Performance Cheat Sheet</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 1.2</p>
+<h1>Performance cheat sheet</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-01-vocabulary/0002-latency-throughput-percentiles.html">Lesson 0002</a>.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Throughput</h3><p>Work done per second (QPS/RPS, records/s). The key number for batch systems.</p></div>
+  <div class="card"><h3>Response time</h3><p>Client-observed time for one request = service time + queueing + network. The key number for online systems. Everyday "latency" usually means this.</p><p class="from">DDIA p. 14</p></div>
+  <div class="card"><h3>Bandwidth</h3><p>The maximum a link <em>can</em> carry per second. Throughput is what actually gets through.</p></div>
+  <div class="card"><h3>Percentiles</h3><p>p50 = median, the typical request. p95/p99/p999 = the tail. "p99 = X" means 1% of requests take X or longer. The mean describes nobody.</p></div>
+  <div class="card"><h3>Why the tail matters</h3><p>Users send many requests; slow requests often come from the heaviest users (Amazon targets p99.9); SLOs are written in percentiles. But p99.99 is usually too costly to chase.</p></div>
+  <div class="card"><h3>Fan-out amplification</h3><p>P(user request slow) = 1 − (1 − p)<sup>N</sup>. 100 backends × 1% slow → 63% slow. Each backend's p99 becomes the user's p50.</p><p class="from">Dean &amp; Barroso, "The Tail at Scale"</p></div>
+  <div class="card"><h3>Little's Law</h3><p>In-flight requests = throughput × response time. 2,000 req/s × 50 ms = 100 concurrent. If response time doubles, so does the concurrency you need.</p></div>
+  <div class="card"><h3>Utilization vs waiting</h3><p>Simple queue: response = work ÷ (1 − utilization). 50% busy → 2×, 80% → 5×, 95% → 20× the work time. Keep headroom.</p></div>
+  <div class="card"><h3>Measuring</h3><p>Measure on the client side. Never average percentiles; merge histograms. Load-test with traffic that keeps arriving whether or not the system is slow.</p></div>
+</div>
+
+<h2 style="margin-top:20px">Latency numbers (Dean, 2010; via Xu Ch. 2)</h2>
+<div class="wide"><div class="table-wrap"><table>
+  <thead><tr><th>Operation</th><th>Time</th><th>Rough rule</th></tr></thead>
+  <tbody>
+    <tr><td>L1 / L2 cache</td><td>0.5 / 7 ns</td><td rowspan="2">memory: nanoseconds</td></tr>
+    <tr><td>Main memory reference</td><td>100 ns</td></tr>
+    <tr><td>Compress 1 KB</td><td>10 µs</td><td rowspan="3">same machine / same DC: microseconds</td></tr>
+    <tr><td>Read 1 MB from memory</td><td>250 µs</td></tr>
+    <tr><td>Round trip in same data center</td><td>500 µs</td></tr>
+    <tr><td>Spinning disk seek</td><td>10 ms</td><td rowspan="3">disk / bulk network: milliseconds (SSD random read: tens of µs)</td></tr>
+    <tr><td>Read 1 MB from network</td><td>10 ms</td></tr>
+    <tr><td>Read 1 MB from disk</td><td>30 ms</td></tr>
+    <tr><td>California ↔ Netherlands round trip</td><td>150 ms</td><td>cross-continent: ~100+ ms, set by physics</td></tr>
+  </tbody>
+</table></div></div>
+
+</main>
+</body>
+</html>

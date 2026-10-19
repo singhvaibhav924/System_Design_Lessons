@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Design Course</title>
+<link rel="stylesheet" href="assets/course.css">
+<script src="assets/course.js"></script>
+<style>
+  .phase { border-top: 1px solid var(--rule); padding: 22px 0 8px; }
+  .phase-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .phase-head .pn { font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-3); min-width: 64px; }
+  .phase-head h2 { margin: 0; font-size: 23px; }
+  .phase .topics { font-family: var(--sans); font-size: 13.5px; color: var(--ink-3); margin: 6px 0 10px 76px; }
+  .phase.skipped h2, .phase.skipped .topics { color: var(--ink-3); }
+  .lessons { list-style: none; padding: 0; margin: 0 0 12px 76px; }
+  .lessons li { display: flex; gap: 12px; align-items: baseline; padding: 7px 0; border-bottom: 1px dashed var(--rule); margin: 0; font-size: 17px; }
+  .lessons li:last-child { border-bottom: 0; }
+  .lessons .ln { font-family: var(--mono); font-size: 13px; color: var(--ink-3); min-width: 40px; }
+  .lessons a { text-decoration: none; }
+  .lessons a:hover { text-decoration: underline; }
+  .lessons .planned { color: var(--ink-3); }
+  .lessons .badge { margin-left: auto; }
+  .quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 8px 0 36px; }
+  .quick a { display: block; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); text-decoration: none; font-family: var(--sans); font-size: 14px; color: var(--ink); }
+  .quick a span { display: block; color: var(--ink-3); font-size: 12.5px; margin-top: 2px; }
+  .quick a:hover { border-color: var(--accent); }
+  @media (max-width: 600px) {
+    .phase .topics, .lessons { margin-left: 0; }
+    .lessons li { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+
+<p class="kicker">Course index</p>
+<h1>System design, from the machinery up</h1>
+<p class="subtitle">For an ML engineer who wants to design systems from scratch, and judge the ones coding agents write.</p>
+
+<div class="quick wide">
+  <a href="reference/scalability.html">Ref: Scalability<span>Cheat sheet · lesson 0001</span></a>
+  <a href="reference/performance.html">Ref: Performance<span>Cheat sheet · lesson 0002</span></a>
+  <a href="reference/availability.html">Ref: Availability<span>Cheat sheet · lesson 0003</span></a>
+  <a href="glossary.md">glossary.md<span>Terms you've asked about</span></a>
+  <a href="MISSION.md">MISSION.md<span>Why we're doing this</span></a>
+  <a href="RESOURCES.md">RESOURCES.md<span>Books & sources used</span></a>
+  <a href="BOOK_INDEX.md">BOOK_INDEX.md<span>Which book covers what, by page</span></a>
+</div>
+
+<p style="font-family:var(--sans);font-size:14px;color:var(--ink-3)">
+  Phases follow the roadmap from your ChatGPT conversation. Lessons are numbered in the order you take them.
+  <span class="badge done">done</span> = written, <span class="badge later">planned</span> = coming up.
+</p>
+
+<!-- PHASE 0 -->
+<section class="phase skipped wide">
+  <div class="phase-head"><span class="pn">Phase 0</span><h2>Prerequisites: networking, OS, database basics</h2></div>
+  <p class="topics">Skipped for now, at your request. You already know these at a basic-to-medium level. We'll come back to any part only if you ask.</p>
+</section>
+
+<!-- PHASE 1 -->
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 1</span><h2>System-design vocabulary</h2></div>
+  <p class="topics">Scalability · performance · availability · CAP / PACELC · distributed-systems fundamentals</p>
+  <ul class="lessons">
+    <li><span class="ln">0001</span><a href="lessons/phase-01-vocabulary/0001-scaling-up-out-and-state.html">Scaling up, scaling out, and why state is the real problem</a><span class="badge done">done</span></li>
+    <li><span class="ln">0002</span><a href="lessons/phase-01-vocabulary/0002-latency-throughput-percentiles.html">Latency, throughput, and why the average lies</a><span class="badge done">done</span></li>
+    <li><span class="ln">0003</span><a href="lessons/phase-01-vocabulary/0003-availability-reliability-durability.html">Availability, reliability, durability, and what the "nines" really cost</a><span class="badge done">done</span></li>
+    <li class="planned"><span class="ln">0004</span><span class="planned">CAP theorem, done properly, and PACELC</span><span class="badge later">planned</span></li>
+    <li class="planned"><span class="ln">0005</span><span class="planned">Distributed-systems fundamentals: partial failure, timeouts, retries, idempotency</span><span class="badge later">planned</span></li>
+  </ul>
+</section>
+
+<!-- PHASES 2–17 -->
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 2</span><h2>Databases in depth</h2></div>
+  <p class="topics">Relational design & indexes · internals (WAL, B-trees, LSM-trees) · replication · sharding & consistent hashing</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 3</span><h2>Caching</h2></div>
+  <p class="topics">Cache-aside / read-through / write-through / write-behind · eviction · stampede, penetration, hot keys · distributed caches</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 4</span><h2>Messaging &amp; async systems</h2></div>
+  <p class="topics">Queues, brokers, consumer groups, offsets, acks · Kafka in depth · delivery guarantees</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 5</span><h2>Distributed systems</h2></div>
+  <p class="topics">Consistency models · distributed transactions (2PC, saga, outbox) · consensus (Raft) · coordination (ZooKeeper, etcd)</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 6</span><h2>Storage systems</h2></div>
+  <p class="topics">Object / block / file storage · erasure coding · checksums · durability</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 7</span><h2>Service architecture &amp; APIs</h2></div>
+  <p class="topics">Monolith vs microservices · REST, gRPC, async · API design: pagination, versioning, idempotency keys</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 8</span><h2>Infrastructure: load balancers, CDNs, proxies</h2></div>
+  <p class="topics">L4 vs L7 · balancing algorithms · health checks · CDN · reverse proxies & API gateways</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 9</span><h2>Reliability engineering</h2></div>
+  <p class="topics">Circuit breaker, bulkhead, backpressure, load shedding · observability: logs, metrics, traces · RED / USE</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 10</span><h2>Security essentials</h2></div>
+  <p class="topics">Sessions, JWT, OAuth/OIDC · RBAC/ABAC · encryption · common attacks · cloud network security</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 11</span><h2>Specialized high-scale patterns</h2></div>
+  <p class="topics">Rate limiting · ID generation · search · geospatial · time-series · notifications · feeds · file uploads</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 12</span><h2>Data-intensive systems</h2></div>
+  <p class="topics">Batch (MapReduce, Spark) · streaming (windows, watermarks) · warehouses & lakehouses · ETL/ELT, CDC</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 13</span><h2>ML system design</h2></div>
+  <p class="topics">Serving · feature stores · pipelines · GPU infra · monitoring & drift · LLM systems (RAG, gateways, caching, agents)</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 14</span><h2>Design patterns, consolidated</h2></div>
+  <p class="topics">CQRS · event sourcing · saga · outbox · materialized views · hot/cold storage</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 15</span><h2>Capacity estimation</h2></div>
+  <p class="topics">Back-of-the-envelope maths: QPS, storage, bandwidth, memory, server counts</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 16</span><h2>Interview methodology</h2></div>
+  <p class="topics">The step-by-step flow from requirements to trade-offs, and how to talk about trade-offs</p>
+</section>
+<section class="phase wide">
+  <div class="phase-head"><span class="pn">Phase 17</span><h2>Full system designs</h2></div>
+  <p class="topics">URL shortener → chat → feed → YouTube → payments → ML inference platform, feature store, RAG, LLM serving</p>
+</section>
+
+</main>
+</body>
+</html>

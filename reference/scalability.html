@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scalability Cheat Sheet</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 1.1</p>
+<h1>Scalability cheat sheet</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-01-vocabulary/0001-scaling-up-out-and-state.html">Lesson 0001</a>, for quick review.</p>
+
+<div class="callout key">
+  <span class="label">One-line definition</span>
+  <p><strong>Scalability</strong> = the ability to cope with <em>a specific kind</em> of load growth. Always say which load parameter
+  is growing (requests/sec, read:write ratio, users online at once, data size, payload size…). <span class="from">(DDIA p. 10–11)</span></p>
+</div>
+
+<div class="wide">
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Scale up / vertical</th><th>Scale out / horizontal</th></tr></thead>
+  <tbody>
+    <tr><td>Move</td><td>Bigger machine (CPU, RAM, disk, GPU)</td><td>More machines (shared-nothing nodes)</td></tr>
+    <tr><td>Pros</td><td>Simple, no code changes, no network coordination</td><td>Much higher ceiling, cheap standard hardware, survives losing machines or data centers</td></tr>
+    <tr><td>Cons</td><td>Hard ceiling, cost grows faster than linearly, 2× size ≠ 2× load, SPOF</td><td>Network coordination, consistency and partial failure. Work must be splittable</td></tr>
+    <tr><td>Use when</td><td>Early on, for databases until forced, GPU-bound inference</td><td>Stateless tiers, beyond one machine's limit, high-availability needs</td></tr>
+  </tbody>
+</table>
+</div>
+</div>
+
+<div class="card-grid wide">
+  <div class="card">
+    <h3>Bottleneck</h3>
+    <p>The slowest part on a request's path. It limits the whole system. Scaling anything else is wasted.</p>
+    <p class="from">Ask first: "what saturates first at 10× load?"</p>
+  </div>
+  <div class="card">
+    <h3>SPOF</h3>
+    <p>A part whose failure stops the entire system. Fix: redundancy plus failover. "Build redundancy at every tier."</p>
+    <p class="from">Xu Ch. 1</p>
+  </div>
+  <div class="card">
+    <h3>Fault domain</h3>
+    <p>A set of things that fail together: a rack, a building, an availability zone, a region. Copies only count as redundant if they're in different fault domains.</p>
+  </div>
+  <div class="card">
+    <h3>Stateful server</h3>
+    <p>Remembers client data between requests in its own memory or disk. The same user must keep hitting the same server (sticky sessions). Hard to add, remove or lose servers.</p>
+  </div>
+  <div class="card">
+    <h3>Stateless server</h3>
+    <p>Keeps nothing between requests and reads state from a shared store (DB, Redis). Servers are interchangeable, so they're easy to scale and autoscale.</p>
+    <p class="from">The state <em>moved</em>; it didn't vanish. The data tier now has the hard problems.</p>
+  </div>
+  <div class="card">
+    <h3>Elasticity / autoscaling</h3>
+    <p>Adding and removing machines automatically with load. Great for unpredictable load. Manual scaling is simpler with fewer surprises (DDIA p. 17). Watch for cold starts (e.g. loading model weights).</p>
+  </div>
+</div>
+
+<h2 style="margin-top:24px">Xu's scaling checklist (end of Ch. 1)</h2>
+<ol>
+  <li>Keep the web tier stateless</li>
+  <li>Build redundancy at every tier</li>
+  <li>Cache data as much as you can</li>
+  <li>Support multiple data centers</li>
+  <li>Host static assets in a CDN</li>
+  <li>Scale the data tier by sharding</li>
+  <li>Split tiers into individual services</li>
+  <li>Monitor your system and use automation tools</li>
+</ol>
+
+</main>
+</body>
+</html>

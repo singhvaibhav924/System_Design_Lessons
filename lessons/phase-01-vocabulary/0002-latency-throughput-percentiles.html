@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Latency, Throughput, Percentiles</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/perf-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 1 · System-design vocabulary</span> <span>/</span>
+  <span>Lesson 0002</span>
+</nav>
+
+<p class="kicker">Phase 1.2 · Performance</p>
+<h1>Latency, throughput, and why the average lies</h1>
+<p class="subtitle">How to describe "fast", and why the slowest 1% of requests matters more than the typical one.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~18 min</span>
+  <span><b>Main sources</b> DDIA Ch. 1 "Describing Performance" · Alex Xu Ch. 2</span>
+  <span><b>Roadmap topics</b> latency, throughput, QPS, bandwidth, concurrency, response time, tail latency, p50–p99.9</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Read a latency dashboard correctly. Explain why p99 matters more than the average, why one slow server can slow
+  down most of your users, and why a server at 90% CPU feels slow even though it's "only" 90% busy.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Two different questions: "how much?" and "how fast?"</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 1, "Describing Performance" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=35">p. 13</a>
+</aside>
+
+<p>Kleppmann splits performance into two kinds of number:</p>
+
+<ul>
+  <li><strong>Throughput:</strong> how much work gets done per second. For a web service it's usually counted as
+  <span class="term" data-tip="Queries per second / requests per second. The two names are used interchangeably: how many requests a system handles each second.">QPS or RPS</span>.
+  For a batch job, it's records per second or "how long does the whole job take".</li>
+  <li><strong>Response time:</strong> how long <em>one</em> request takes, from the client sending it to the client getting the answer.</li>
+</ul>
+
+<p>Which one you care about depends on the system. In his words, for batch systems "we usually care about throughput",
+while "in online systems, what's usually more important is the service's response time."</p>
+
+<p>A third word gets mixed up with throughput: <strong>bandwidth</strong>. Bandwidth is the <em>maximum</em> amount of data
+a link <em>can</em> carry per second (e.g. a 1 Gbps network card). Throughput is how much actually gets through. Think of a
+highway: bandwidth is the number of lanes, throughput is how many cars actually pass per hour, and response time is how long
+one car's trip takes. A wide highway can still have a slow trip if there's a traffic jam.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Nightly batch scoring is a throughput problem: nobody cares how long row #4,812,330 took, only that the job finishes by 6 a.m.
+  A real-time fraud check during checkout is a response-time problem: each request has to come back in, say, 50 ms.
+  Many interview mistakes start by optimising the wrong one of these two.</p>
+</div>
+
+<h3>Latency vs response time</h3>
+<aside class="side">
+  <span class="src">DDIA sidebar "Latency and response time" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=36">p. 14</a>
+</aside>
+<p>Kleppmann is careful here. <strong>Response time</strong> is what the client sees: the actual work (the <em>service time</em>)
+<em>plus</em> time spent waiting in queues <em>plus</em> network travel. <strong>Latency</strong>, strictly, is only the time a request
+spends waiting to be handled. In everyday engineering talk (and in interviews), people say "latency" when they mean response time,
+and this course does the same. Just keep in mind that <em>response time = waiting + working + travelling</em>, because the
+"waiting" part is where most surprises come from (section 05).</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Response time is a distribution, not a number</h2>
+
+<p>Send the same request 100 times and you'll get 100 slightly different times. Kleppmann lists the usual causes, none of them
+under your control: a
+<span class="term" data-tip="The operating system pausing your process to run something else for a moment.">context switch</span>
+to a background process, a lost network packet that has to be
+<span class="term" data-tip="TCP noticing a packet never arrived and sending it again. The wait before resending is often hundreds of milliseconds.">re-sent by TCP</span>,
+a <span class="term" data-tip="A moment when a language runtime (Java, Go, Python…) pauses your program to clean up unused memory. Can last from milliseconds to seconds.">garbage-collection pause</span>,
+a <span class="term" data-tip="The program needs memory that the OS had moved to disk, so it has to wait for a disk read.">page fault</span>,
+even "mechanical vibrations in the server rack." So most requests are fast and a few are randomly very slow.</p>
+
+<p>The chart below shows 100 requests to one service (a re-creation of DDIA's Figure 1-4). The slider controls how many
+requests get hit by one of those random hiccups. Watch what happens to each number as you move it.</p>
+
+<div class="figure wide">
+  <div class="pct-explorer"></div>
+  <div class="caption">
+    Things to notice: (1) move the slider from 0% to 10%. The <strong>mean</strong> climbs steadily and the <strong>p50</strong> barely moves.
+    (2) The <strong>p99</strong> jumps first (once 2 of the 100 requests are hit), and the <strong>p95</strong> jumps only when more than 5 requests are hit (around 7% on the slider). A percentile ignores outliers until there are enough of them to reach its position.
+    (3) Switch to "Sorted": a percentile is just "line up all requests by time and read off the bar at that position."
+    Hover over any bar to see its time.
+  </div>
+</div>
+
+<h3>Mean, median, percentiles</h3>
+<aside class="side">
+  <span class="src">DDIA —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=37">p. 15</a>
+</aside>
+<ul>
+  <li><strong>Mean (average):</strong> add them all up and divide. Kleppmann: it's "not a very good metric if you want to know your
+  'typical' response time, because it doesn't tell you how many users actually experienced that delay." A few very slow requests
+  drag it up, so it describes nobody.</li>
+  <li><strong>Median = p50:</strong> half the requests were faster than this, half slower. This is the "typical" experience.</li>
+  <li><strong>p95, p99, p99.9 (written p999):</strong> 95%, 99% or 99.9% of requests were faster than this. "p99 = 1.2 s" means
+  1 in 100 requests took 1.2 s or longer.</li>
+  <li><strong>Tail latency:</strong> the name for these high percentiles: the slow "tail" end of the distribution.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Why the slow 1% matters so much</h2>
+
+<p>"It's only 1 in 1,000 requests" sounds harmless. Kleppmann gives three reasons it isn't.</p>
+
+<p><strong>1. Each user sends many requests.</strong> The median describes a single request. One page load, or one session, makes many
+requests, so "the probability that at least one of them is slower than the median is much greater than 50%." If loading a page
+takes 20 requests, most users hit the p95 at least once on every page.</p>
+
+<p><strong>2. The slowest requests often come from your best customers.</strong> Amazon sets its internal response-time targets at
+<strong>p99.9</strong>, because the slowest requests tend to be from customers "who have the most data on their accounts because they
+have made many purchases — that is, they're the most valuable customers." Amazon also observed that adding 100 ms of response time
+reduced sales by 1%.</p>
+
+<p><strong>3. Contracts are written in percentiles.</strong> A service's target might be "p50 under 200 ms and p99 under 1 s".
+These targets are called
+<span class="term" data-tip="Service Level Objective: an internal target for a service, e.g. 'p99 response time under 300 ms'. An SLA is a contract with customers built on such targets, with penalties if it's missed." data-later="Lesson 0003 · Availability & SLOs (next lesson)">SLOs and SLAs</span>.
+Nobody writes them in terms of the mean.</p>
+
+<div class="callout trap">
+  <span class="label">But don't chase every nine</span>
+  <p>Amazon decided that improving the <strong>p99.99</strong> (1 in 10,000) was "too expensive" and not worth it. Very high percentiles are
+  dominated by random events you can't control, and each extra nine costs more for less benefit. A strong interview answer names
+  <em>which</em> percentile the requirement is about and why, e.g. "p99 under 200 ms for the checkout fraud check".</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Fan-out: how one slow server slows most users</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Percentiles in Practice" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=38">p. 16</a>.
+  The original paper: Dean &amp; Barroso,
+  <a href="https://cacm.acm.org/research/the-tail-at-scale/">"The Tail at Scale"</a> (CACM 2013).
+</aside>
+
+<p>Real systems rarely answer a request alone. Your API calls a user service, a feature store and a model server. A search query asks
+50 index shards at once. This is <strong>fan-out</strong>: one user request turns into many backend calls. Even when those calls run in
+parallel, the user has to wait for the <em>slowest</em> one.</p>
+
+<p>If each call is slow 1% of the time, the chance that <em>at least one</em> of N calls is slow is <code>1 − 0.99<sup>N</sup></code>.
+Kleppmann calls this <strong>tail latency amplification</strong>. Google's Dean and Barroso give the famous example: with 100 servers
+that are each slow 1 time in 100, <strong>63%</strong> of user requests are slow.</p>
+
+<div class="figure wide">
+  <div class="fanout-calc"></div>
+  <div class="caption">The slider shows how quickly "rarely slow" becomes "usually slow." Hover over the line to read any value.</div>
+</div>
+
+<div class="callout key">
+  <span class="label">The consequence</span>
+  <p>With wide enough fan-out (around 70 calls, since 1 − 0.99<sup>70</sup> ≈ 50%), <strong>each backend's p99 becomes the user's p50</strong>. That's why big systems care so much about
+  backend tail latency, and why techniques for cutting the tail exist. One example from the same paper is
+  <span class="term" data-tip="Send the same request to two replicas, use whichever answers first, and cancel the other. It costs a little extra load and cuts tail latency a lot." data-later="Phase 9 · Reliability engineering">hedged requests</span>.
+  When you see a design with wide fan-out, the first question to ask is: "what's the tail latency of each leg?"</p>
+</div>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A RAG request that queries 8 vector-index shards, a feature lookup across 4 stores before a model call, an ensemble of 5 models:
+  each is fan-out, and each user-facing p99 is set by the worst leg.
+  <span class="term" data-tip="Retrieval-Augmented Generation: fetch relevant documents first, then give them to an LLM along with the question." data-later="Phase 13 · LLM system design">RAG</span>
+  pipelines are especially prone to this because they chain fan-out stages one after another.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Latency vs throughput: the queue between them</h2>
+
+<p>Latency and throughput aren't independent. Two ideas connect them.</p>
+
+<h3>Idea 1: Little's Law — how many requests are in flight</h3>
+<aside class="side">
+  Not in DDIA or Xu. It's a classic queueing result. See
+  <a href="https://en.wikipedia.org/wiki/Little%27s_law">Little's law</a>.
+</aside>
+<p>On average, in a stable system:</p>
+<pre>requests in flight  =  throughput  ×  response time
+     (concurrency)        (req/s)        (seconds)</pre>
+<p>If your API handles 2,000 requests/sec and each takes 50 ms, then on average 2,000 × 0.05 = <strong>100 requests are in progress
+at any moment</strong>. So you need at least 100 worker threads, connections or async slots. This is how
+<strong>concurrency</strong> relates to the other two numbers. It's also a quick sanity check in capacity estimates, and a warning:
+if response time doubles (say the database slows down), the number of requests in flight doubles too, and you can run out of
+threads or connections even though traffic didn't change.</p>
+
+<h3>Idea 2: as a server gets busier, waiting time explodes</h3>
+<aside class="side">
+  The curve uses the simplest queueing model
+  (<a href="https://en.wikipedia.org/wiki/M/M/1_queue">M/M/1</a>: random arrivals, one worker):
+  response time = work ÷ (1 − utilization). Real systems differ in detail but have the same shape.
+</aside>
+<p>Kleppmann notes that "queueing delays often account for a large part of the response time at high percentiles." A server can
+only work on a few things at once (limited by its CPU cores), so extra requests wait in line. A few slow requests at the front
+hold up the fast ones behind them, which is called
+<span class="term" data-tip="When one slow item at the front of a queue blocks everything behind it, even items that would be quick on their own.">head-of-line blocking</span>.
+How long the line gets depends on how busy the server is, and the relationship is not linear:</p>
+
+<div class="figure wide">
+  <div class="util-curve"></div>
+  <div class="caption">Each request needs 50 ms of real work. Drag from 50% to 80% to 95% busy. The work never changes. Only the waiting does.</div>
+</div>
+
+<p>Going from 50% to 80% busy multiplies response time by 2.5. Going from 80% to 95% multiplies it by 4 more. This is why you
+<strong>can't run servers near 100% utilization and expect good latency</strong>, and why capacity plans deliberately leave headroom
+at peak instead of aiming for full machines. Throughput and latency trade against each other: squeezing the last bit of throughput out of a machine
+costs you response time.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>GPU inference shows the same trade-off on purpose:
+  <span class="term" data-tip="Grouping several incoming requests into one batch before running the model. The GPU does far more work per second, but each request waits a little to be grouped." data-later="Phase 13 · ML infrastructure">batching</span>
+  requests multiplies throughput, but each request waits for its batch to fill. Serving systems expose exactly this as a setting:
+  "max batch size" and "max wait time" are a throughput-vs-latency knob.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>Measuring it without fooling yourself</h2>
+
+<aside class="side">
+  <span class="src">DDIA —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=38">p. 16</a>
+</aside>
+
+<p>Three practical rules from Kleppmann that commonly trip up real dashboards:</p>
+<ol>
+  <li><strong>Measure on the client side.</strong> The server's own timer starts when it picks up the request, so it misses the time the
+  request spent waiting in the queue. That queue time is exactly the part that grows under load.</li>
+  <li><strong>Never average percentiles.</strong> Averaging the p99 of 10 servers, or averaging minute-by-minute p99s into an hourly p99,
+  is "mathematically meaningless." The right way is to combine the underlying
+  <span class="term" data-tip="A count of how many requests fell into each time bucket (0–10 ms, 10–20 ms, …). Histograms from different servers can simply be added together, and percentiles are read from the combined result.">histograms</span>
+  and compute the percentile from the total. Monitoring tools use compact structures for this, such as
+  <span class="term" data-tip="Data structures that estimate percentiles over huge streams of numbers using little memory. Prometheus histograms work on the same idea." data-later="Phase 9 · Observability">t-digest or HdrHistogram</span>.</li>
+  <li><strong>Load-test honestly.</strong> If your load-testing tool waits for each response before sending the next request, it slows down
+  exactly when the system does. The queue never builds up the way it would with real users, and your test looks better than reality.
+  Real load keeps arriving whether or not you're slow.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>Numbers to know: how slow is "slow"?</h2>
+
+<aside class="side">
+  <span class="src">Alex Xu, Ch. 2, Table 2-2 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=36">open in your PDF</a>.
+  Updated, interactive version (Xu's own reference):
+  <a href="https://colin-scott.github.io/personal_website/research/interactive_latency.html">Colin Scott's latency chart</a>.
+</aside>
+
+<p>To reason about where time goes, you need a rough sense of how long things take. Xu reproduces Jeff Dean's (Google) well-known
+table from 2010. The exact numbers have changed since then, but the <em>ratios</em> between them are what matter. The last column
+rescales everything so an L1 cache read takes one second, to make the gaps easier to feel.</p>
+
+<div class="wide">
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Operation</th><th>Time (2010)</th><th>If L1 cache = 1 second</th></tr></thead>
+  <tbody>
+    <tr><td>L1 cache reference</td><td>0.5 ns</td><td>1 second</td></tr>
+    <tr><td>Branch mispredict</td><td>5 ns</td><td>10 seconds</td></tr>
+    <tr><td>L2 cache reference</td><td>7 ns</td><td>14 seconds</td></tr>
+    <tr><td>Mutex lock/unlock</td><td>100 ns</td><td>3.3 minutes</td></tr>
+    <tr><td>Main memory reference</td><td>100 ns</td><td>3.3 minutes</td></tr>
+    <tr><td>Compress 1 KB (fast compressor)</td><td>10 µs</td><td>5.6 hours</td></tr>
+    <tr><td>Send 2 KB over 1 Gbps network</td><td>20 µs</td><td>11 hours</td></tr>
+    <tr><td>Read 1 MB sequentially from memory</td><td>250 µs</td><td>5.8 days</td></tr>
+    <tr><td>Round trip within same data center</td><td>500 µs</td><td>11.6 days</td></tr>
+    <tr><td>Disk seek (spinning disk)</td><td>10 ms</td><td>7.6 months</td></tr>
+    <tr><td>Read 1 MB sequentially from network</td><td>10 ms</td><td>7.6 months</td></tr>
+    <tr><td>Read 1 MB sequentially from disk</td><td>30 ms</td><td>1.9 years</td></tr>
+    <tr><td>Packet California → Netherlands → California</td><td>150 ms</td><td>9.5 years</td></tr>
+  </tbody>
+</table>
+</div>
+</div>
+
+<p>Xu's takeaways: <em>memory is fast and disk is slow; avoid disk seeks; simple compression is fast, so compress before sending over
+the network; data centers in different regions are far apart in time.</em> Two things to add:</p>
+<ul>
+  <li>Modern <strong>SSDs</strong> have largely replaced spinning disks for databases. A random read takes tens of microseconds, not 10 ms
+  (see the interactive chart). The order of things still holds: memory ≪ SSD ≪ spinning disk.</li>
+  <li><strong>The speed of light doesn't improve.</strong> A cross-ocean round trip is still ~150 ms. If users are on another continent, no
+  amount of server tuning beats moving data closer to them, which is the whole idea behind
+  <span class="term" data-tip="Content Delivery Network: servers spread around the world that keep copies of your content close to users." data-later="Phase 8 · CDN">CDNs</span>
+  and multi-region designs.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">08</span>The page in five lines</h2>
+
+<ol>
+  <li><strong>Throughput</strong> = work per second. <strong>Response time</strong> = how long one request takes (waiting + working + travelling). <strong>Bandwidth</strong> = the link's maximum capacity.</li>
+  <li>Response time is a <strong>distribution</strong>. Report <strong>p50</strong> for typical and <strong>p95/p99/p999</strong> for the tail. The mean describes nobody.</li>
+  <li>Tail latency matters because users send many requests, slow requests often belong to your heaviest users, and SLOs are written in percentiles.</li>
+  <li><strong>Fan-out amplifies the tail:</strong> 1 − (1 − p)<sup>N</sup>. With wide fan-out, each backend's p99 becomes the user's p50.</li>
+  <li><strong>In-flight requests = throughput × response time</strong> (Little's Law). As utilization approaches 100%, queueing makes response times explode, so keep headroom.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">A dashboard shows mean = 180 ms, p50 = 90 ms. What does that most likely tell you?</p>
+      <div class="opts">
+        <button>most requests take about 180 ms</button>
+        <button>the service is measured on the client</button>
+        <button>a few very slow requests pull the mean</button>
+        <button>half the requests are failing with errors</button>
+      </div>
+      <p class="why">When the mean is far above the median, a small number of slow outliers is dragging it up. The typical request is ~90 ms.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">One user request calls 50 backends in parallel. Each is slow 1% of the time. Roughly what share of user requests are slow?</p>
+      <div class="opts">
+        <button>about 1 percent, same as each backend</button>
+        <button>about 40 percent, since 1 − 0.99⁵⁰</button>
+        <button>about 50 percent, since half are slow</button>
+        <button>about 2 percent, since calls are parallel</button>
+      </div>
+      <p class="why">0.99⁵⁰ ≈ 0.605, so ≈ 39.5% of user requests hit at least one slow backend. Running the calls in parallel doesn't help, because you wait for the slowest.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">You have 10 servers and want the fleet-wide p99 for the last hour. Which is correct?</p>
+      <div class="opts">
+        <button>merge all histograms, then compute p99</button>
+        <button>average the ten per-server p99 values</button>
+        <button>take the highest of the ten p99s</button>
+        <button>average the sixty per-minute p99 values</button>
+      </div>
+      <p class="why">Percentiles can't be averaged. Combine the underlying distributions (histograms) and compute the percentile from the combined data.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">Your API does 1,000 req/s and each request takes 200 ms. On average, how many requests are in flight?</p>
+      <div class="opts">
+        <button>about 5, from one over 0.2</button>
+        <button>about 1,000, one per each second</button>
+        <button>about 20, from 1,000 over 50</button>
+        <button>about 200, from 1,000 × 0.2</button>
+      </div>
+      <p class="why">Little's Law: in-flight = throughput × response time = 1,000/s × 0.2 s = 200.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">A team runs servers at 95% CPU to save money, and p99 latency is terrible even though each request's work is cheap. Why?</p>
+      <div class="opts">
+        <button>the CPU becomes slower when nearly full</button>
+        <button>the network bandwidth is fully used up</button>
+        <button>requests spend most time waiting in queues</button>
+        <button>the mean is hiding a low median</button>
+      </div>
+      <p class="why">Near full utilization, queueing delay grows sharply. The work per request is the same; the waiting is what explodes.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 1, "Describing Load" through "Percentiles in Practice"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=33">pp. 11–17</a>).
+      Read the Twitter example on pp. 11–13 too. It comes back in the news-feed design later.</li>
+    <li>Then: <strong>Dean &amp; Barroso, <a href="https://cacm.acm.org/research/the-tail-at-scale/">"The Tail at Scale"</a></strong>.
+      A short, readable Google paper and the standard reference on tail latency.</li>
+    <li>Skim: <strong>Xu, Ch. 2</strong>, latency numbers (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=36">p. 36</a>).</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/performance.html">Performance cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0001-scaling-up-out-and-state.html">← 0001 · Scaling up, out, and state</a>
+  <a href="0003-availability-reliability-durability.html">Next: 0003 · Availability, reliability &amp; durability →</a>
+</nav>
+
+</main>
+</body>
+</html>
