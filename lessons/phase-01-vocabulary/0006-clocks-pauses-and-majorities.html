@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clocks, Pauses, Majorities</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/clock-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 1 · System-design vocabulary</span> <span>/</span>
+  <span>Lesson 0006</span>
+</nav>
+
+<p class="kicker">Phase 1.5 · Distributed-systems fundamentals (part 2)</p>
+<h1>Clocks lie, processes freeze, and the majority decides</h1>
+<p class="subtitle">Why no machine can be sure what time it is, whether it's still in charge, or whether another machine is dead, and the two ideas that make systems safe anyway.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main sources</b> DDIA Ch. 8 "Unreliable Clocks" &amp; "Knowledge, Truth, and Lies" · Alex Xu Ch. 6</span>
+  <span><b>Roadmap topics</b> clock problems · heartbeats · failure detection · quorums · leader/lock safety</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain why "use the timestamp to see which write came last" can silently lose data, why a server can't trust its own belief that it's
+  still the leader, and how <strong>majority quorums</strong> and <strong>fencing tokens</strong> keep the system correct anyway.
+  These two ideas show up later in replication, Kafka, ZooKeeper and Raft.
+</div>
+
+<p>Lesson 0005 showed that a timeout tells you only that <em>you</em> stopped waiting. This lesson takes the same uncertainty further.
+Kleppmann sums up the position of every machine in a distributed system: <em>"A node in the network cannot know anything for sure — it can
+only make guesses based on the messages it receives (or doesn't receive) via the network."</em></p>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Is that node dead? Heartbeats and the false-death problem</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 8, "Detecting Faults" and "Timeouts and Unbounded Delays" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=302">pp. 280–281</a>
+</aside>
+
+<p>Many parts of a system need to detect dead machines automatically. A load balancer must stop sending traffic to a dead server. A database
+must pick a new <span class="term" data-tip="The one replica that accepts writes and decides their order. The others copy from it." data-later="Phase 2.3 · Replication">leader</span>
+when the old one dies. The usual mechanism is a <strong>heartbeat</strong>: every node sends a small "I'm alive" message every second or so,
+and a node that stays silent past a timeout is declared dead.</p>
+
+<p>Sometimes you get a clear signal (a refused connection when the process has crashed), but Kleppmann warns that "you can't count on it."
+In general a silent timeout is the only signal you get, and it puts you in the same bind as lesson 0005:</p>
+<ul>
+  <li><strong>Timeout too long:</strong> users wait or see errors while a truly dead node is still considered alive.</li>
+  <li><strong>Timeout too short:</strong> a node that was only <em>slow</em> gets declared dead. If it was in the middle of something, such as
+  sending an email, the replacement may do it again. Worse, its work moves to other nodes, which adds load. If the cluster was already
+  overloaded, this can cascade: "in the extreme case, all nodes declare each other dead, and everything stops working."</li>
+</ul>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 6, "Failure detection" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=99">open in your PDF</a>
+</aside>
+
+<p>Xu adds the interview version. "It is insufficient to believe that a server is down because another server says so", so you want at least
+two independent sources before marking it down. With many nodes, having everyone heartbeat everyone is too expensive, so systems such as
+Cassandra use a <strong>gossip protocol</strong>. Each node keeps a list of heartbeat counters, increments its own, and periodically sends the
+list to a few <em>random</em> nodes, which pass it on. If a node's counter hasn't increased for a while (and others agree), it's marked offline.
+News spreads through the cluster the way a rumour does, without anyone talking to everyone.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Two different clocks in every computer</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Monotonic Versus Time-of-Day Clocks" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=310">pp. 288–289</a>
+</aside>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Time-of-day clock ("wall clock")</th><th>Monotonic clock</th></tr></thead>
+  <tbody>
+    <tr><td>Answers</td><td>"What date and time is it?"</td><td>"How much time has passed?"</td></tr>
+    <tr><td>Can jump backwards?</td><td><strong>Yes</strong>. When it syncs with a time server and is too far ahead, it gets reset</td><td>No. "Guaranteed to always move forward"</td></tr>
+    <tr><td>Compare across machines?</td><td>Roughly, if both are synced</td><td><strong>Never</strong>. Its absolute value is meaningless (e.g. nanoseconds since boot)</td></tr>
+    <tr><td>Use it for</td><td>Timestamps shown to humans, "send at 9 a.m."</td><td>Timeouts, response times, durations</td></tr>
+    <tr><td>In Python</td><td><code>time.time()</code>, <code>datetime.now()</code></td><td><code>time.monotonic()</code>, <code>time.perf_counter()</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Timing a model's inference with <code>time.time()</code> before and after usually works, until a clock sync lands in the middle and you log a
+  negative or wildly wrong latency. For durations, always use the monotonic clock. Your p99 dashboards from lesson 0002 depend on it.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Wall clocks are less accurate than they look</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Clock Synchronization and Accuracy" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=311">pp. 289–291</a>
+</aside>
+
+<p>Computers keep their wall clock roughly right by regularly syncing with time servers using
+<span class="term" data-tip="Network Time Protocol: the standard way computers ask time servers what time it is and adjust their own clock.">NTP</span>.
+Kleppmann's list of what goes wrong:</p>
+<ul>
+  <li><strong>Drift.</strong> The quartz crystal runs fast or slow, depending on temperature. Google assumes 200 parts per million. That's
+  6 ms of error if you resync every 30 seconds, or <strong>17 seconds</strong> if you resync once a day.</li>
+  <li><strong>Jumps.</strong> A clock that is too far off gets forcibly reset, so programs see time go backwards or leap forward.</li>
+  <li><strong>Sync is only as good as the network.</strong> Over the internet, about 35 ms of error is the best achievable, with occasional
+  spikes to around a second. A machine accidentally firewalled off from its time servers can drift unnoticed.</li>
+  <li><strong>Leap seconds</strong> make a minute 59 or 61 seconds long, and "have crashed many large systems."</li>
+  <li><strong>Virtual machines</strong> get paused for tens of milliseconds while another VM uses the CPU, so from inside, the clock suddenly jumps.</li>
+  <li><strong>User devices</strong> can't be trusted at all. People set their phone's clock wrong on purpose, e.g. to cheat in games.</li>
+</ul>
+
+<p>The most dangerous part: a broken clock usually doesn't crash anything. Kleppmann: "most things will seem to work fine", and if software
+relies on synchronized clocks, "the result is more likely to be silent and subtle data loss than a dramatic crash."</p>
+
+<div class="callout key">
+  <span class="label">A clock reading is a range, not a point</span>
+  <p>Your clock may print microseconds, but if it's only accurate to ±100 ms, "the microsecond digits in the timestamp are essentially meaningless."
+  Google's Spanner database is the famous exception that takes this seriously. Its TrueTime API returns <code>[earliest, latest]</code> instead of a
+  single time, and Spanner deliberately <em>waits out</em> that uncertainty (about 7 ms, using GPS receivers and atomic clocks in every data center)
+  before committing, so that the order of transactions is certain.
+  <span style="font-family:var(--sans);font-size:13px;color:var(--ink-3)">(DDIA <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=315">pp. 293–295</a>)</span></p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Why "the latest timestamp wins" loses data</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Timestamps for ordering events", Fig. 8-3 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=313">pp. 291–293</a>
+</aside>
+
+<p>Suppose two copies of a database receive conflicting writes to the same key. The tempting fix is to tag every write with the wall-clock time
+and keep the newest one. This is called <strong>last write wins (LWW)</strong>, and Kleppmann notes it is widely used, including in Cassandra and Riak.</p>
+
+<p>His example: client A writes <code>x = 1</code> on node 1. Shortly afterwards, client B increments it to <code>x = 2</code> on node 3. Node 3's clock is
+just 3 ms behind node 1's. That's excellent synchronization, "probably better than you can expect in practice." B's write gets an <em>earlier</em>
+timestamp than A's, so every replica keeps <code>x = 1</code> and B's write vanishes.</p>
+
+<div class="figure wide">
+  <div class="lww-sim"></div>
+  <div class="caption">The defaults recreate DDIA's Figure 8-3 (A = 42.004 s, B = 42.003 s). Data is lost whenever the clock difference is larger than the real gap between the writes. With thousands of writes per second, that gap is often under a millisecond.</div>
+</div>
+
+<p>Kleppmann lists three problems with LWW: writes "can mysteriously disappear" with no error; it can't tell "B came after A" apart from
+"A and B happened at the same time without knowing about each other"; and two writes can get identical timestamps. Making clocks more accurate can't fully fix this,
+because NTP's accuracy is itself limited by network delay. The safer tool for ordering events is a
+<span class="term" data-tip="A counter-based way to order events (A happened before B) that doesn't use real time at all, so clock errors can't break it. Examples: Lamport timestamps, version vectors." data-later="Phase 5 · Consistency & ordering">logical clock</span>,
+which counts events instead of reading the time.</p>
+
+<div class="callout trap">
+  <span class="label">Interview red flag</span>
+  <p>"We'll resolve conflicts by taking the record with the latest <code>updated_at</code>" sounds reasonable and is often wrong across machines.
+  The strong answer names the risk (clock skew silently drops writes) and either accepts it on purpose (e.g. for a "last seen online" field
+  where losing an update doesn't matter) or uses something safer (a single leader that decides order, version numbers, or conflict-free merging).</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Any process can freeze at any moment</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Process Pauses" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=317">pp. 295–299</a>
+</aside>
+
+<p>Clocks aren't the only problem. A program can also stop running for a while without noticing. Kleppmann's example: a leader holds a
+<strong>lease</strong> (a lock that expires automatically, say after 30 seconds, unless renewed). Its loop checks "does my lease still have 10 seconds
+left?" and then processes a request. What if the thread freezes for 15 seconds <em>between</em> the check and the processing? By the time it continues,
+the lease has expired, another node is now leader, and this node goes ahead anyway.</p>
+
+<p>Is a 15-second freeze realistic? Kleppmann's list of causes:</p>
+<ul>
+  <li><strong>Garbage collection.</strong> "Stop-the-world" pauses "have sometimes been known to last for several minutes!"</li>
+  <li><strong>Virtual machines</strong> being suspended or live-migrated to another host, for an arbitrary length of time.</li>
+  <li><strong>The CPU being given to other threads or VMs</strong> on a heavily loaded machine.</li>
+  <li><strong>Slow disk I/O</strong>, including disks that are really network storage (e.g. Amazon EBS).</li>
+  <li><strong>Swapping</strong>: memory pressure forces the OS to move memory to disk, and in the worst case the machine spends all its time swapping.</li>
+  <li><strong>A laptop lid closing</strong>, or an operator accidentally sending <code>Ctrl-Z</code> (SIGSTOP).</li>
+</ul>
+
+<p>The conclusion: "A node in a distributed system must assume that its execution can be paused for a significant length of time at any point, even
+in the middle of a function. During the pause, the rest of the world keeps moving and may even declare the paused node dead."</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A Python worker that starts swapping while loading a big dataframe, a training node on a VM that gets live-migrated, a feature-pipeline job
+  stuck on slow network storage: from the outside, each one is a node that "went silent" and may be declared dead, then wakes up and carries on
+  as if nothing happened.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>The truth is defined by the majority</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "The Truth Is Defined by the Majority" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=322">pp. 300–302</a>
+</aside>
+
+<p>Put sections 01–05 together and you get Kleppmann's gothic scenarios. A node whose outgoing messages are being dropped gets "dragged to the
+graveyard, kicking and screaming 'I'm not dead!'" A node frozen for a minute by garbage collection is declared dead, then "suddenly raises its head
+out of the coffin, in full health," unaware that any time passed.</p>
+
+<p>The moral: <strong>"a node cannot necessarily trust its own judgment of a situation."</strong> So instead of letting any one node decide,
+distributed systems decide by <strong>quorum</strong>, a vote among nodes. "If a quorum of nodes declares another node dead, then it must be
+considered dead, even if that node still very much feels alive." The usual quorum is a <strong>majority</strong> (more than half), and it has one key property:</p>
+
+<blockquote class="quote">
+  "There can only be only one majority in the system — there cannot be two majorities with conflicting decisions at the same time."
+  <cite>— DDIA, p. 301</cite>
+</blockquote>
+
+<p>If a network split divides 5 nodes into groups of 3 and 2, only the group of 3 can form a majority and keep making decisions. The group of 2 knows
+it's in the minority and stops. That's how a system avoids
+<span class="term" data-tip="Two nodes both believing they are the leader at the same time, each accepting writes, so the data diverges or gets corrupted." data-later="Phase 2.3 · Replication">split brain</span>.
+(This is also the CAP trade-off from lesson 0004 in practice: the minority side gives up availability to keep consistency.)</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Nodes</th><th>Majority needed</th><th>Failures survived</th></tr></thead>
+  <tbody>
+    <tr><td>3</td><td>2</td><td>1</td></tr>
+    <tr><td>4</td><td>3</td><td>1 (no better than 3)</td></tr>
+    <tr><td>5</td><td>3</td><td>2</td></tr>
+    <tr><td>7</td><td>4</td><td>3</td></tr>
+  </tbody>
+</table>
+</div>
+<p>This is why clusters that vote (ZooKeeper, etcd, Kafka's controllers) are almost always sized at <strong>3 or 5 nodes</strong>. An even
+number adds cost without surviving more failures.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The zombie leader, and fencing tokens</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "The leader and the lock" and "Fencing tokens" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=323">pp. 301–304</a>
+</aside>
+
+<p>Systems often need exactly one of something: one leader per database
+<span class="term" data-tip="One piece of a dataset that has been split across machines (a shard)." data-later="Phase 2.3 · Sharding">partition</span>,
+one holder of a lock, one owner of a username. The quorum can decide who that is, but the old holder may not have heard. After a pause, it can
+come back still believing it's "the chosen one". Kleppmann notes this exact bug existed in HBase: a paused client with an expired lease woke up
+and wrote to a file that a new lease holder was also writing to, corrupting it.</p>
+
+<p>The fix is <strong>fencing tokens</strong>. Every time the lock service grants a lease, it also hands out a number that always increases (33, then 34, …).
+Every write to the protected resource must include the token, and the <em>resource itself</em> rejects any token older than one it has already seen.
+Step through it both ways:</p>
+
+<div class="figure wide">
+  <div class="fencing-sim"></div>
+  <div class="caption">Run it once with the box unticked (DDIA's Figure 8-4: corrupted file), then tick "Storage checks fencing tokens" and run again (Figure 8-5: the stale write is rejected).</div>
+</div>
+
+<div class="callout key">
+  <span class="label">The design rule</span>
+  <p>The check must happen <strong>at the resource</strong>, not in the client. Kleppmann: "it is not sufficient to rely on clients checking their lock
+  status themselves", because the client checking is exactly the part that can be paused or wrong. This is the general pattern: <em>don't trust a node's
+  belief that it's in charge; make the thing being changed verify it.</em> You'll see it again with ZooKeeper, Kafka and Raft, where the token is called a
+  <span class="term" data-tip="A number that goes up every time a new leader is elected. Messages from an older term are ignored, the same idea as a fencing token." data-later="Phase 5.3 · Consensus">term or epoch number</span>.</p>
+</div>
+
+<p>One last boundary, from the same chapter: all of this assumes nodes may be slow, paused or out of date, but <strong>honest</strong>. A node that
+deliberately lies (e.g. sends a fake token) is a <strong>Byzantine fault</strong>. Tolerating those needs much heavier protocols, which are used in
+places like aircraft systems and blockchains, but rarely inside a company's own data center.
+<span style="font-family:var(--sans);font-size:13px;color:var(--ink-3)">(DDIA <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=326">p. 304</a>)</span></p>
+
+<!-- ============================================================ -->
+<h2><span class="num">08</span>The page in five lines</h2>
+
+<ol>
+  <li>Failure detection = heartbeats + timeouts. Too short declares slow nodes dead (duplicate work, cascades). Too long leaves users waiting. Gossip spreads heartbeats cheaply in big clusters.</li>
+  <li>Use <strong>monotonic</strong> clocks for durations and timeouts. Wall clocks drift, jump backwards and disagree between machines, and the errors are usually silent.</li>
+  <li><strong>Last write wins</strong> by wall-clock timestamp silently drops writes when clock skew is larger than the gap between writes. Use a single orderer, versions or logical clocks when it matters.</li>
+  <li>Any process can freeze (GC, VM migration, swapping, slow disk) and wake up acting on outdated beliefs, such as "I hold the lease".</li>
+  <li><strong>The majority decides</strong>, not any single node (3 nodes survive 1 failure, 5 survive 2). <strong>Fencing tokens</strong>, checked by the resource, stop a zombie leader from doing damage.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="3">
+      <p class="q">You want to measure how long a model call took. Which clock should you use?</p>
+      <div class="opts">
+        <button>the wall clock, because it's synced by NTP</button>
+        <button>the database server's clock, as one true source</button>
+        <button>the client device's clock, since users see it</button>
+        <button>the monotonic clock, because it never jumps backward</button>
+      </div>
+      <p class="why">Durations need a clock that only moves forward. A wall clock can be reset mid-measurement.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">Two replicas resolve conflicts with "latest timestamp wins". Node B's clock is 5 ms behind. What can happen?</p>
+      <div class="opts">
+        <button>writes are rejected with a clear clock-skew error</button>
+        <button>a later write is silently discarded as older</button>
+        <button>both writes are kept and then merged together</button>
+        <button>nothing, because 5 ms is far too small</button>
+      </div>
+      <p class="why">A write made on B less than 5 ms after a write on A gets an earlier timestamp and is thrown away. No error is reported.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Why do voting clusters like ZooKeeper or etcd usually run 3 or 5 nodes rather than 4?</p>
+      <div class="opts">
+        <button>an even number of nodes cannot use gossip</button>
+        <button>four nodes need two separate leaders at once</button>
+        <button>four nodes survive no more failures than three</button>
+        <button>odd numbers make clocks much easier to synchronize</button>
+      </div>
+      <p class="why">A majority of 4 is 3, so 4 nodes survive only 1 failure, the same as 3 nodes but with more cost.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">A lease holder freezes in a long GC pause, its lease expires and another node takes over. What stops the frozen one from corrupting data when it wakes?</p>
+      <div class="opts">
+        <button>the storage rejecting writes with an older fencing token</button>
+        <button>the frozen node checking its lease before every write</button>
+        <button>a longer lease so that it never expires at all</button>
+        <button>synchronizing all the clocks with a GPS receiver first</button>
+      </div>
+      <p class="why">The client's own check is the part that can be stale or paused. The resource must enforce ordering with fencing tokens.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A node is declared dead by a majority but feels perfectly healthy. What should it do?</p>
+      <div class="opts">
+        <button>keep serving, since its own view is accurate</button>
+        <button>accept the majority's decision and step down immediately</button>
+        <button>start a second cluster with the remaining nodes</button>
+        <button>reset its clock and then rejoin as leader</button>
+      </div>
+      <p class="why">"The individual node must abide by the quorum decision and step down." A node can't trust its own judgment of the situation.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 8, "Unreliable Clocks" through "Byzantine Faults"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=309">pp. 287–305</a>).
+      One of the best-written parts of the book, and the "dead node" stories are worth reading in his words.</li>
+    <li>Then: <strong>Xu, Ch. 6, "Handling failures"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=99">pp. 99–103</a>) for gossip-based failure detection in an interview design.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/clocks-quorums.html">Clocks &amp; quorums cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0005-partial-failure-timeouts-retries-idempotency.html">← 0005 · Partial failure, timeouts &amp; retries</a>
+  <span class="disabled">Next: Phase 2 · Databases (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

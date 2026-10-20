@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clocks and Quorums</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 1.5 (part 2)</p>
+<h1>Clocks, pauses &amp; quorums</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">Lesson 0006</a>.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Failure detection</h3><p>Heartbeats + timeout. Too short: slow nodes declared dead → duplicate work, load shifts, cascades. Too long: slow recovery. Gossip spreads heartbeat counters via random peers.</p><p class="from">DDIA pp. 280–281 · Xu Ch. 6</p></div>
+  <div class="card"><h3>Two clocks</h3><p><b>Wall clock</b>: date/time, can jump back, roughly comparable across machines. <b>Monotonic</b>: durations only, never goes back, not comparable across machines. Python: <code>time.time()</code> vs <code>time.monotonic()</code>.</p></div>
+  <div class="card"><h3>Clock errors</h3><p>Drift (200 ppm ≈ 17 s/day unsynced), forced resets, NTP over the internet ≥ ~35 ms, leap seconds, VM pauses, untrusted user devices. Usually silent.</p></div>
+  <div class="card"><h3>Last write wins</h3><p>Keeps the highest timestamp. Silently drops a later write whenever clock skew &gt; the gap between writes. Safer: single leader ordering, version numbers, logical clocks.</p><p class="from">DDIA Fig. 8-3</p></div>
+  <div class="card"><h3>Clock = confidence interval</h3><p>A reading is really [earliest, latest]. Spanner's TrueTime exposes it and waits out ~7 ms of uncertainty before committing.</p></div>
+  <div class="card"><h3>Process pauses</h3><p>GC (up to minutes), VM suspend/migration, CPU steal, slow/network disks, swapping, SIGSTOP. A node can freeze anywhere and wake with stale beliefs.</p></div>
+  <div class="card"><h3>Majority quorum</h3><p>Decisions need &gt; half the nodes. Only one majority can exist, so no split brain. n nodes survive ⌊(n−1)/2⌋ failures: 3→1, 5→2. Use odd sizes.</p></div>
+  <div class="card"><h3>Fencing token</h3><p>Lock service hands out an increasing number with each lease. The <em>resource</em> rejects writes with a token lower than one it has seen. Stops zombie leaders.</p><p class="from">DDIA Fig. 8-5</p></div>
+  <div class="card"><h3>Byzantine fault</h3><p>A node that lies, not just one that's slow or stale. Normal systems assume nodes are honest; tolerating liars needs much heavier protocols.</p></div>
+</div>
+</main>
+</body>
+</html>

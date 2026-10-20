@@ -15,15 +15,21 @@
 - `assets/perf-widgets.js`: .pct-explorer (percentile chart), .fanout-calc, .util-curve (reuse in Phase 9 / 15)
 - Chart colours: --viz-1 blue, --viz-2 orange (validated with dataviz checker). Text never uses series colours.
 - `assets/avail-widgets.js`: .nines-calc, .composite-calc (series/parallel availability)
+- `assets/clock-widgets.js`: .lww-sim (last-write-wins + skew), .fencing-sim (lease/fencing step-through)
 - `assets/sim-session.js`: stateful vs stateless load-balancer simulator (reuse in Phase 8 LB lesson)
 - `reference/*.html`: cheat sheets (one per topic cluster)
 - `resources/_extracted/*.txt`: text extracts of the PDFs, with `=====PAGE N=====` markers
 - Planned phase folders: phase-01-vocabulary, phase-02-databases, phase-03-caching, phase-04-messaging, phase-05-distributed-systems, phase-06-storage, phase-07-service-architecture, phase-08-infrastructure, phase-09-reliability, phase-10-security, phase-11-patterns, phase-12-data-systems, phase-13-ml-systems, phase-14-design-patterns, phase-15-estimation, phase-16-interview-method, phase-17-designs
 
 ## Phase 1 plan
-0001 scaling (done) → 0002 latency/throughput/percentiles (done) → 0003 availability/SLO/nines (done) → 0004 CAP + PACELC (done; DDIA Ch9 "The Cost of Linearizability", Abadi paper for PACELC) → 0005 distributed fundamentals (done; DDIA Ch8, Ch7 retries, Ch11 idempotence, Ch12 end-to-end)
+0001 scaling (done) → 0002 latency/throughput/percentiles (done) → 0003 availability/SLO/nines (done) → 0004 CAP + PACELC (done; DDIA Ch9 "The Cost of Linearizability", Abadi paper for PACELC) → 0005 distributed fundamentals (done by Codex, reviewed 2026-10-20; DDIA Ch8, Ch7 retries, Ch11 idempotence, Ch12 end-to-end) → 0006 clocks, pauses, failure detection, majority quorums, fencing (done; DDIA Ch8 pp.287–305 / PDF 309–327, Xu gossip). Phase 1 complete → next: Phase 2 Databases
 
 ## External sources used so far (not in local books)
 - Google SRE book (sre.google/sre-book): SLI/SLO/SLA, error budgets (lesson 0003)
 - AWS S3 durability doc (lesson 0003); Dean & Barroso 'Tail at Scale' (0002); Little's law / M/M/1 Wikipedia (0002)
+- AWS Builders' Library 'Timeouts, retries, and backoff with jitter' (jitter, 243x amplification) — added to 0005 in review
 - Daniel Abadi, ["Consistency Tradeoffs in Modern Distributed Database System Design"](https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf) (PACELC in lesson 0004; not covered in local books)
+
+## Conventions
+- Codex-written lessons (0004, 0005) label sidenote pages as PDF pages; Claude-written ones label printed pages (links always use PDF #page). Either is fine; new lessons use printed page labels.
+- Work happens on git `main`; the user may write lessons with other agents on side branches. Review before merging.
