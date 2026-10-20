@@ -36,8 +36,8 @@
   <span class="src">DDIA, Ch. 9, “The Cost of Linearizability” —</span>
   <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=358">pp. 358–360</a>
 </aside>
-<p>In CAP, <strong>consistency</strong> means a specific guarantee: <span class="term" data-tip="A read sees the latest completed write, as if every operation happened instantly in one shared order. The fuller treatment comes in Phase 5.">linearizability</span>. If one client writes a new bank balance and gets confirmation, a later read by another client must see that balance or a newer one.</p>
-<p>This is narrower than the word “consistency” in ACID, and narrower than the everyday claim that replicas will eventually converge. When you hear “CAP consistency,” ask which guarantee is meant. Kleppmann uses linearizability for the CAP trade-off.</p>
+<p>In CAP, <strong>consistency</strong> means a specific guarantee: <span class="term" data-tip="A read sees the latest completed write, as if there were only one copy of the data and every operation happened instantly in one shared order." data-later="Phase 5.1 · Consistency models">linearizability</span>. If one client writes a new bank balance and gets confirmation, a later read by another client must see that balance or a newer one.</p>
+<p>This is narrower than the word “consistency” in <span class="term" data-tip="The four classic guarantees of a database transaction: Atomicity, Consistency, Isolation, Durability. Its C means the data obeys the application’s rules, which is a different idea from CAP’s C." data-later="Phase 2.1 · Transactions">ACID</span>, and narrower than the everyday claim that replicas will eventually converge. When you hear “CAP consistency,” ask which guarantee is meant. Kleppmann uses linearizability for the CAP trade-off.</p>
 
 <h2><span class="num">02</span>CAP is about the moment a network splits</h2>
 <aside class="side">
@@ -74,6 +74,11 @@
 
 <h2><span class="num">03</span>What CAP does not tell you</h2>
 <p>CAP describes a narrow situation: linearizability versus formal availability during a network partition. It does not say that all non-linearizable systems are highly available, or that every system must always be either “CP” or “AP.” A system can have different behavior for different reads, writes, keys, or configuration settings.</p>
+<aside class="side">
+  <span class="src">DDIA, “The Unhelpful CAP Theorem” and “Linearizability and network delays” —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=359">PDF pp. 359–360</a>
+</aside>
+<p>Kleppmann goes further. He suggests a more honest phrasing, <em>“either Consistent or Available when Partitioned”</em>, and concludes that because CAP covers only one consistency model and one kind of fault, it “has little practical value for designing systems.” His more useful point comes right after: <strong>“Linearizability is slow—and this is true all the time, not only during a network fault.”</strong> Even the RAM in a multi-core CPU isn’t linearizable, because each core works from its own cache. There’s no network partition inside one computer, so the reason is speed. Most distributed databases that skip linearizability do it “primarily to increase performance, not so much for fault tolerance.”</p>
 <p>It also does not explain the cost of coordination on an ordinary day. Even without a partition, a write that must be confirmed by a remote replica takes a network round trip. A design that answers from a nearby replica can be faster, but may return older data. That everyday trade-off motivated PACELC.</p>
 
 <h2><span class="num">04</span>PACELC adds the ordinary-day trade-off</h2>
@@ -89,8 +94,22 @@
   <p class="caption">The arrows show the design tension: getting more of one side may cost you some of the other.</p>
 </div>
 
-<p>For example, a database may accept writes at a nearby replica and synchronize them later. That can keep response times low, but another reader may briefly see the previous value. A database that waits for confirmation from a leader or a quorum can return a more up-to-date value, but the extra coordination adds delay.</p>
-<p>PACELC is a way to describe this design posture; it is not a promise that every operation has one fixed behavior. Abadi’s paper uses pairs such as <strong>PA/EL</strong> to summarize the trade-offs: during partitions favor availability, and otherwise favor latency. The exact guarantees still depend on the database and the operation.</p>
+<p>For example, a database may accept writes at a nearby replica and synchronize them later. That can keep response times low, but another reader may briefly see the previous value. A database that waits for confirmation from a <span class="term" data-tip="The one replica that accepts writes and decides their order; other replicas copy from it." data-later="Phase 2.3 · Replication">leader</span> or a <span class="term" data-tip="A minimum number of replicas (usually a majority) that must confirm a read or write before it counts." data-later="Phase 2.3 · Replication (and lesson 0006)">quorum</span> can return a more up-to-date value, but the extra coordination adds delay.</p>
+<p>PACELC is a way to describe this design posture; it is not a promise that every operation has one fixed behavior. Abadi’s paper (2012) classifies real systems with pairs like these:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Class</th><th>Meaning</th><th>Abadi’s examples</th></tr></thead>
+  <tbody>
+    <tr><td>PA/EL</td><td>Gives up consistency in both cases: for availability when partitioned, for low latency otherwise</td><td>Dynamo, Cassandra, Riak (default settings)</td></tr>
+    <tr><td>PC/EC</td><td>Never gives up consistency; pays in availability and latency</td><td>VoltDB/H-Store, Megastore, BigTable, HBase</td></tr>
+    <tr><td>PA/EC</td><td>Consistent normally, but a partition causes inconsistency</td><td>MongoDB (as of the 2012 paper)</td></tr>
+    <tr><td>PC/EL</td><td>Trades consistency for latency normally; when partitioned, reduces availability rather than consistency</td><td>Yahoo’s PNUTS</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two cautions from the paper itself. First, the defaults are adjustable: Dynamo-style systems “have user-adjustable settings to alter the ELC tradeoff”, so asking more replicas to confirm each read and write buys consistency at the cost of latency. Second, products change over time, so treat these as examples of the reasoning, not current product facts. The exact guarantees still depend on the database, its configuration and the operation.</p>
 
 <div class="callout key">
   <span class="label">A useful design question</span>

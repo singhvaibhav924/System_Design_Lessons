@@ -26,7 +26,7 @@
   <div class="card"><h3>Partial failure</h3><p>Some nodes or links fail while other parts keep working. The caller may not know which part is broken.</p><p class="from">DDIA Ch. 8, pp. 296–299</p></div>
   <div class="card"><h3>Timeout</h3><p>“I stopped waiting.” It does not prove the request did not arrive, run, or commit.</p><p class="from">DDIA Ch. 8, pp. 300–306</p></div>
   <div class="card"><h3>Choosing a timeout</h3><p>No universal value. Measure response-time variation and fit the timeout to the caller’s deadline and tolerance for delay.</p></div>
-  <div class="card"><h3>Safe retries</h3><p>Retry transient failures only. Cap attempts, increase the wait between them, and stop at the overall deadline.</p><p class="from">DDIA Ch. 7, pp. 254–255</p></div>
+  <div class="card"><h3>Safe retries</h3><p>Retry transient failures only. Cap attempts, increase the wait between them <strong>with random jitter</strong>, and stop at the overall deadline. Retry at one layer only (5 layers × 3 tries = 243× load).</p><p class="from">DDIA Ch. 7, pp. 254–255</p></div>
   <div class="card"><h3>Retry danger</h3><p>The first attempt may have succeeded and its response may have been lost. A retry can apply the effect twice; overload retries can add load.</p></div>
   <div class="card"><h3>Idempotent operation</h3><p>Repeating the operation leaves the same final effect as doing it once. “Set status = complete” usually is; “increment counter” is not.</p><p class="from">DDIA Ch. 11, pp. 500–501</p></div>
   <div class="card"><h3>Operation ID</h3><p>Give one user action a stable ID. Carry it to the effect and enforce uniqueness atomically. Reuse the ID on retries; use a new one for a new action.</p><p class="from">DDIA Ch. 12, pp. 539–542</p></div>

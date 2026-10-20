@@ -79,12 +79,20 @@
 <p>If an operation fails because of a temporary network interruption or a database failover, trying again may work. If it failed because the request is invalid, retrying the same request will not fix it. And if the service is overloaded, more attempts can add load exactly when it has the least spare capacity.</p>
 <p>For a retryable operation, use a <strong>bounded number of attempts</strong> with increasing waits between attempts (<span class="term" data-tip="Each retry waits longer than the one before it, often multiplying the delay. This gives a temporarily unhealthy service time to recover and limits extra traffic.">exponential backoff</span>). Stop when the request’s overall deadline is reached. Retry transient failures; surface permanent failures instead.</p>
 
+<aside class="side">
+  <span class="src">AWS Builders’ Library,</span>
+  <a href="https://builder.aws.com/content/3EumjoZascWd1oZiEgL8ORlv3qE/timeouts-retries-and-backoff-with-jitter">“Timeouts, retries, and backoff with jitter”</a>.
+  Not covered in the local books; this is the standard industry reference.
+</aside>
+<p>Backoff alone has a trap. If a dependency hiccups, thousands of clients fail at the same moment, and with identical backoff they all retry at the same moment too, hitting the dependency in synchronized waves. AWS: “If all the failed calls back off to the same time, they cause contention or overload again when they are retried.” The fix is <strong>jitter</strong>: “Jitter adds some amount of randomness to the backoff to spread the retries around in time.” In practice: <em>wait a random amount between 0 and the current backoff</em>, not exactly the backoff.</p>
+
 <div class="callout trap">
   <span class="label">A retry can duplicate a successful operation</span>
   <p>The request may have succeeded and only its response may have been lost. Retrying a payment, counter increment, email send, or job creation can apply the effect twice unless the operation has a duplicate-suppression mechanism.</p>
 </div>
 
 <p>Retries can also multiply across service layers. If a client, gateway, and application each retry several times, a single user action can turn into many calls to an already struggling dependency. Agree on which layer owns retries, cap attempts, and pass one overall deadline through the call chain.</p>
+<p>AWS gives the arithmetic: with five layers that each try three times, “the load on the database will increase 243x, making it unlikely to ever recover,” because “the retries at each layer multiply.” They also call retries “selfish”: a retrying client spends more of the server’s time to improve its own chances. Their mitigation is to limit retries locally with a <span class="term" data-tip="A counter that refills at a fixed rate; each retry spends one token, and when the bucket is empty, the client stops retrying. It caps retries as a share of normal traffic." data-later="Phase 11 · Rate limiting">token bucket</span>, so retries can never grow beyond a small share of normal traffic.</p>
 
 <h2><span class="num">04</span>Idempotency makes repeating an operation safe</h2>
 <aside class="side">
@@ -170,6 +178,7 @@
     <li><strong>Kleppmann, <em>DDIA</em>, Ch. 8, “Faults and Partial Failures” and “Unreliable Networks”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=296">PDF pp. 296–306</a>). The model for why remote failure is ambiguous and timeouts have no universally correct value.</li>
     <li><strong>Kleppmann, <em>DDIA</em>, Ch. 7, “Handling Errors and Aborts”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=254">PDF pp. 254–255</a>). When retries help, when they amplify overload, and why they can duplicate a successful transaction.</li>
     <li><strong>Kleppmann, <em>DDIA</em>, Ch. 11, “Idempotence”</strong> (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=500">PDF pp. 500–501</a>) and Ch. 12, “The End-to-End Argument” (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=539">PDF pp. 539–542</a>).</li>
+    <li><strong>AWS Builders’ Library, <a href="https://builder.aws.com/content/3EumjoZascWd1oZiEgL8ORlv3qE/timeouts-retries-and-backoff-with-jitter">“Timeouts, retries, and backoff with jitter”</a></strong>. Short and practical: jitter, retry amplification, retry budgets.</li>
     <li><strong>Xu, <em>System Design Interview</em>, Ch. 10, “Design a Notification System”</strong> (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=160">PDF pp. 160–161</a>). An interview-scale example of persisted notifications, retries, and duplicate suppression.</li>
   </ul>
   <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/failure-timeouts-retries.html">Failure, timeout, and retry cheat sheet</a></p>
@@ -182,7 +191,7 @@
 
 <nav class="pager">
   <a href="0004-cap-theorem-and-pacelc.html">← 0004 · CAP theorem &amp; PACELC</a>
-  <span class="disabled">Next: Phase 2 · Databases (planned)</span>
+  <a href="0006-clocks-pauses-and-majorities.html">Next: 0006 · Clocks, pauses &amp; majorities →</a>
 </nav>
 
 </main>
