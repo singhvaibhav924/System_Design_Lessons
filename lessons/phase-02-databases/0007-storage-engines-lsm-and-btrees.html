@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage Engines: LSM and B-trees</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/storage-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0007</span>
+</nav>
+
+<p class="kicker">Phase 2.2 · Database internals (part 1)</p>
+<h1>How a database finds your row: logs, LSM-trees and B-trees</h1>
+<p class="subtitle">Almost every database you will use stores data in one of two ways. Each one is fast at something different, and that difference explains which database fits which job.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main source</b> DDIA Ch. 3 "Data Structures That Power Your Database" · Alex Xu Ch. 6</span>
+  <span><b>Roadmap topics</b> indexes · SSTables · LSM-trees · compaction · B-trees · pages · WAL · write amplification</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain, step by step, what happens on disk when a database writes and reads a key in the two big designs: <strong>LSM-trees</strong>
+  (Cassandra, RocksDB, HBase) and <strong>B-trees</strong> (PostgreSQL, MySQL and almost every relational database). Then say which one you'd pick for a
+  write-heavy job and which for a read-heavy one, and what each choice costs.
+</div>
+
+<p>Kleppmann's reason for caring: you will probably never write a storage engine, "but you do need to select a storage engine that is appropriate
+for your application", and tuning one needs "a rough idea of what the storage engine is doing under the hood." When an interviewer asks
+"why Cassandra here and not Postgres?", this lesson is the answer.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>The simplest database, and the trade-off every index makes</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 3, "Data Structures That Power Your Database" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=92">pp. 70–71</a>
+</aside>
+
+<p>Kleppmann opens with a complete key-value database written as two shell functions:</p>
+<pre><code>db_set () { echo "$1,$2" >> database; }                                  # append a line
+db_get () { grep "^$1," database | sed -e "s/^$1,//" | tail -n 1; }   # newest match wins</code></pre>
+
+<p>Every write <strong>appends</strong> a line to the end of a file. Updating a key doesn't overwrite anything; it just adds a newer line, and a read
+takes the last match. A file you only ever add to is called a <strong>log</strong> (here that means "append-only sequence of records", not
+application logs). Appending is about the cheapest write a disk can do, so <code>db_set</code> is fast.</p>
+
+<p><code>db_get</code> is terrible: it reads the whole file on every lookup, so double the data and every read takes twice as long. The fix is an
+<strong>index</strong>, an extra structure kept on the side that points to where each piece of data lives. It brings the central trade-off of this
+whole chapter:</p>
+
+<div class="callout key">
+  <span class="label">The index trade-off</span>
+  <p>"Well-chosen indexes speed up read queries, but every index slows down writes", because each index must also be updated on every write. That's
+  why databases don't index everything automatically. You choose indexes based on the queries you actually run.</p>
+</div>
+
+<p>Everything below is a different answer to one question: how do you keep the index up to date without losing the fast appending?</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Step 1: a hash map pointing into the log</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Hash Indexes", Figs. 3-1 to 3-3 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=94">pp. 72–75</a>
+</aside>
+
+<p>The simplest index: keep a dictionary in memory that maps every key to its
+<span class="term" data-tip="The position in the file, counted in bytes from the start. 'Jump to byte 64' takes one disk read instead of a scan.">byte offset</span>
+in the log. A write appends to the file and updates the dictionary. A read looks up the offset and jumps straight there. This is essentially
+<strong>Bitcask</strong>, the default engine in the Riak database, and it's fast, as long as <strong>all the keys fit in RAM</strong>. Kleppmann's
+example of a good fit is a play counter per cat video: few distinct keys, many updates each.</p>
+
+<p>Two pieces of housekeeping make it practical, and both come back in every log-based design:</p>
+<ul>
+  <li><strong>Segments and compaction.</strong> The log is cut into
+  <span class="term" data-tip="One file of the log. When it reaches a size limit it's closed, never changed again, and writes go to a new file.">segments</span>.
+  In the background, old segments are merged and <strong>compacted</strong>: duplicate keys are thrown away, keeping only the newest value. The merged
+  result goes to a <em>new</em> file, and the old files are deleted only after the switch, so reads and writes carry on during the merge.</li>
+  <li><strong>Tombstones.</strong> You can't delete from an append-only file, so a delete appends a special "this key is deleted" record called a
+  <strong>tombstone</strong>. Compaction later drops the key's old values.</li>
+</ul>
+
+<p>Kleppmann's case for appending over editing in place: sequential writes are much faster than
+<span class="term" data-tip="Writes scattered across different places on the disk. Each one needs a separate seek (on spinning disks) or a separate block update (on SSDs).">random writes</span>,
+and crash recovery is simple because a file that's never edited can't be left half-overwritten.</p>
+
+<p>The two limits that push us to the next design: the keys must fit in memory, and <strong>range queries</strong> are slow. To fetch every key
+between <code>kitty00000</code> and <code>kitty99999</code> you'd have to look up each key one by one, because a hash map keeps no order.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Step 2: keep each file sorted (SSTables and the LSM-tree)</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "SSTables and LSM-Trees", Figs. 3-4, 3-5 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=98">pp. 76–79</a>
+</aside>
+
+<p>One change fixes both limits: require every segment file to be <strong>sorted by key</strong>, with each key at most once. That file is a
+<strong>Sorted String Table (SSTable)</strong>. Sorting buys three things:</p>
+<ol>
+  <li><strong>Merging is cheap</strong>, even for files bigger than memory: read the files side by side and always copy out the smallest key, the
+  same idea as merge sort. If a key is in several files, the newest file wins.</li>
+  <li><strong>The in-memory index can be sparse.</strong> Store the offset of only one key every few kilobytes. To find <code>handiwork</code>, jump to
+  <code>handbag</code> (the nearest key before it) and scan forward a few KB.</li>
+  <li><strong>Blocks compress well</strong>, which saves disk space and disk bandwidth.</li>
+</ol>
+
+<p>But writes arrive in random order. How do they end up sorted on disk without random writes? The trick is to sort in memory first:</p>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 6, "Write path" and "Read path" (Cassandra) —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=105">pp. 105–106</a>
+</aside>
+
+<ol class="ladder">
+  <li class="here"><span class="dot">1</span><span class="step-title">Append the write to a log on disk</span>
+    <span class="step-body">Unsorted and append-only, so it's cheap. Its only job is to rebuild memory after a crash. Xu calls it the <em>commit log</em>.</span></li>
+  <li class="here"><span class="dot">2</span><span class="step-title">Insert it into the memtable</span>
+    <span class="step-body">An in-memory structure that keeps keys sorted (a
+    <span class="term" data-tip="A self-balancing binary search tree: insert keys in any order, read them back in sorted order, each step O(log n).">balanced tree</span>
+    such as a red-black tree). Writes are acknowledged now.</span></li>
+  <li class="here"><span class="dot">3</span><span class="step-title">When the memtable is full, flush it as a new SSTable</span>
+    <span class="step-body">"Typically a few megabytes." It's already sorted, so this is one sequential write. The matching log can then be thrown away.</span></li>
+  <li class="here"><span class="dot">4</span><span class="step-title">Compact in the background</span>
+    <span class="step-body">Merge SSTables, keep the newest value per key, drop tombstoned keys.</span></li>
+</ol>
+
+<p>A <strong>read</strong> checks the memtable, then the newest SSTable, then the next older one, and so on. This design (memtable plus a cascade of
+SSTables merged in the background) is the <strong>Log-Structured Merge-tree</strong>, or LSM-tree. LevelDB and RocksDB use it, and so do Cassandra and
+HBase. Lucene, the search library under Elasticsearch, keeps its word index in similar sorted files.</p>
+
+<p>Try it. Write a few keys, watch the memtable fill and flush, read a key that lives in an old file, then compact:</p>
+
+<div class="figure wide">
+  <div class="lsm-sim"></div>
+  <div class="caption">Things to try: (1) press "+ 5 random writes" a few times, then read a key: the read walks newest → oldest. (2) Delete a key and
+  read it: the tombstone answers "deleted" before older files are reached. (3) Press "Crash &amp; restart": memory is wiped and rebuilt from the log.
+  (4) Watch "write amplification" climb as you compact: the same records are rewritten to disk again and again.</div>
+</div>
+
+<p>Two refinements matter in interviews:</p>
+<ul>
+  <li><strong>Bloom filters.</strong> Reading a key that doesn't exist is the worst case: you check every SSTable before giving up. So each SSTable keeps a
+  <span class="term" data-tip="A small in-memory bit array that answers 'is this key in the file?' with either 'definitely not' or 'maybe'. Never a false 'no', occasionally a false 'maybe'.">Bloom filter</span>,
+  which can say "<em>definitely not in this file</em>" without touching the disk. Its "maybe" is occasionally wrong, which only costs one wasted read.
+  (The simulator's filter is perfect, to keep it simple.)</li>
+  <li><strong>Compaction strategy.</strong> <em>Size-tiered</em> merges smaller, newer files into bigger, older ones (HBase). <em>Leveled</em> splits the key
+  range into small files arranged in levels, so compaction is more gradual and uses less disk space (LevelDB, RocksDB; Cassandra offers both).</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>The other design: B-trees, a tree of fixed-size pages</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "B-Trees", Figs. 3-6, 3-7 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=101">pp. 79–81</a>
+</aside>
+
+<p>Logs are gaining ground, but the most widely used index is the <strong>B-tree</strong>. It was introduced in 1970, called "ubiquitous" less than ten
+years later, and it is still "the standard index implementation in almost all relational databases". Like an SSTable, it keeps keys sorted, so range
+queries are fast. Otherwise the philosophy is opposite:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>LSM-tree</th><th>B-tree</th></tr></thead>
+  <tbody>
+    <tr><td>Unit on disk</td><td>Variable-size segment files, megabytes each</td><td>Fixed-size <strong>pages</strong>, traditionally 4 KB, matching how disks are laid out</td></tr>
+    <tr><td>How a write lands</td><td>Appended; files are never changed, only replaced</td><td><strong>Overwrites the page in place</strong></td></tr>
+    <tr><td>Where a key lives</td><td>Possibly in several files (old versions until compaction)</td><td>In exactly one place</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Pages refer to each other by their location on disk, like pointers, which builds a tree. Each page covers a range of keys and points to child pages
+for smaller sub-ranges, down to <strong>leaf pages</strong> that hold the keys themselves. Follow DDIA's example of looking up key 251:</p>
+
+<div class="figure wide">
+  <div class="btree-lookup"></div>
+  <div class="caption">Drag the slider to look up other keys. "ref" is a page reference: the location of a child page on disk. Real pages hold hundreds
+  of references, not five.</div>
+</div>
+
+<p>The number of children per page is the <strong>branching factor</strong>, and in practice it's "several hundred". Because each level multiplies
+capacity by that much, the tree stays very shallow: "most databases can fit into a B-tree that is three or four levels deep". A lookup reads only
+that many pages, and the top levels are usually already cached in memory.</p>
+
+<div class="figure wide">
+  <div class="btree-calc"></div>
+  <div class="caption">The defaults are DDIA's numbers: 4 levels, 4 KB pages, branching factor 500 → 256 TB.</div>
+</div>
+
+<p><strong>Writes.</strong> To update a key, find its leaf page, change it and write the page back. To insert into a full page, <strong>split</strong> it into
+two half-full pages and update the parent to point to both. This keeps the tree balanced, at depth O(log n), however much data you add.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Overwriting in place is dangerous: the write-ahead log</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Making B-trees reliable" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=104">pp. 82–83</a>
+</aside>
+
+<p>A page split writes three pages: the two halves and the parent. If the machine crashes after writing only some of them, the tree is corrupted.
+For example, a page may be left that no parent points to. The standard fix is a <strong>write-ahead log (WAL)</strong>, also called the <strong>redo log</strong>:
+an append-only file where "every B-tree modification must be written before it can be applied to the pages of the tree itself." After a crash, the
+database replays the log and repairs the tree.</p>
+
+<div class="callout key">
+  <span class="label">Notice the pattern</span>
+  <p>Both designs end up with an append-only log in front of everything else. The LSM-tree uses it to rebuild the memtable. The B-tree uses it to repair
+  half-finished page writes. <em>Write it to a log first, then do the real work</em> is the basic crash-safety move. You'll meet it again as Kafka's
+  log, replication logs and event sourcing.</p>
+</div>
+
+<p>Overwriting in place has one more cost. If several threads change the tree at once, one could see it half-updated, so B-trees protect pages with
+<span class="term" data-tip="Very short-lived locks inside the database's own code that protect a page in memory while one thread changes it. Different from the row locks a transaction takes.">latches</span>.
+LSM-trees avoid most of this: they merge in the background and swap in the new files all at once.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>LSM vs B-tree: what each one costs you</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Comparing B-Trees and LSM-Trees" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=105">pp. 83–85</a>
+</aside>
+
+<p>The rule of thumb: "LSM-trees are typically faster for writes, whereas B-trees are thought to be faster for reads". LSM reads are slower because
+they may check several structures. Kleppmann immediately adds that benchmarks are "often inconclusive and sensitive to details of the workload". The
+reasons behind the rule:</p>
+
+<p><strong>Write amplification</strong> is "one write to the database resulting in multiple writes to the disk over the course of the database's lifetime".
+Both designs have it. A B-tree writes everything at least twice (WAL, then the page), and rewrites a whole 4 KB page even when only a few bytes
+changed. An LSM-tree rewrites data on every compaction. On a write-heavy system, disk bandwidth is the limit, so fewer bytes written means more writes per
+second. It matters on SSDs too, which wear out after a limited number of overwrites.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>LSM-tree</th><th>B-tree</th></tr></thead>
+  <tbody>
+    <tr><td>Write throughput</td><td><strong>Usually higher</strong>: sequential writes, often lower write amplification</td><td>Lower: several page overwrites per write</td></tr>
+    <tr><td>Reads</td><td>May check memtable + several SSTables (Bloom filters help)</td><td><strong>One path</strong> of 3–4 pages</td></tr>
+    <tr><td>Disk space</td><td><strong>Smaller</strong>: compresses well, compaction removes gaps</td><td>Some space lost to half-empty pages after splits</td></tr>
+    <tr><td>Tail latency</td><td>Compaction competes for disk, so p99 can spike</td><td><strong>More predictable</strong></td></tr>
+    <tr><td>Transactions</td><td>Same key may exist in several files</td><td>Each key in exactly one place, so locks on key ranges attach directly to the tree</td></tr>
+    <tr><td>Typical engines</td><td>RocksDB, LevelDB, Cassandra, HBase</td><td>PostgreSQL, MySQL (InnoDB), most relational databases</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout trap">
+  <span class="label">The failure that bites LSM systems in production</span>
+  <p>Disk bandwidth is shared between new writes and background compaction. If writes come in faster than compaction can merge them, "the number of
+  unmerged segments on disk keeps growing until you run out of disk space", and reads slow down because they must check more files. Kleppmann warns
+  that these engines usually <em>don't</em> slow down incoming writes to protect themselves, "so you need explicit monitoring to detect this situation."
+  This is the <a href="../phase-01-vocabulary/0002-latency-throughput-percentiles.html">p99</a> story from lesson 0002 again: the average looks fine while the tail suffers.</p>
+</div>
+
+<p>The B-tree's "one place per key" property is why it suits databases with strong
+<span class="term" data-tip="A group of reads and writes that succeed or fail together, and don't see each other's half-finished work." data-later="Phase 2 · Transactions & isolation">transactions</span>.
+Kleppmann's conclusion: there is "no quick and easy rule", so test with your own workload, but B-trees aren't going away, and new datastores are
+increasingly log-structured.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p><strong>Write-heavy, key-based data</strong> such as prediction logs, click events and per-user features updated all day suits LSM-based stores.
+  That's why Cassandra-style databases show up as online stores for features and event data. Stream processors use the same engine to hold their state:
+  Flink and Kafka Streams both keep it in RocksDB. Expect occasional slow reads during heavy compaction.</p>
+  <p><strong>Read-heavy data with relations and transactions</strong>, such as your experiment tracker, model registry or user accounts, usually lives in
+  PostgreSQL or MySQL, which means B-trees. If someone proposes an LSM store for a workload that's 99% reads and needs transactions, ask why.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The page in five lines</h2>
+
+<ol>
+  <li>An <strong>index</strong> is extra data kept on the side so reads don't scan everything. It speeds up reads and slows down every write.</li>
+  <li><strong>LSM-tree</strong>: log the write, put it in a sorted memtable, flush to immutable sorted files (SSTables), merge them in the background (compaction).
+  Reads go newest → oldest, and Bloom filters skip files that can't contain the key.</li>
+  <li><strong>B-tree</strong>: a shallow tree of fixed-size pages (3–4 levels, branching factor in the hundreds), updated in place, with page splits on insert.</li>
+  <li>Both put an append-only <strong>log first</strong> (commit log / write-ahead log) for crash safety.</li>
+  <li>LSM: higher write throughput and smaller files, but compaction can hurt p99 and fall behind. B-tree: faster and more predictable reads, a natural fit for transactions.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Why doesn't a database simply index every column by default?</p>
+      <div class="opts">
+        <button>indexes only work on the primary key column</button>
+        <button>indexes make range queries slower than full scans</button>
+        <button>every extra index must be updated on writes</button>
+        <button>indexes are lost whenever the database is restarted</button>
+      </div>
+      <p class="why">Indexes speed up reads, but each one adds work to every write. You choose them based on the queries you actually run.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">In an LSM-tree, a write has just been acknowledged. Where does it live right now?</p>
+      <div class="opts">
+        <button>in the append-only log and the memtable</button>
+        <button>in the oldest SSTable, merged by compaction</button>
+        <button>in a leaf page overwritten in place</button>
+        <button>only in memory until the next flush</button>
+      </div>
+      <p class="why">The log on disk makes it crash-safe; the sorted memtable makes it fast to read. It reaches an SSTable only when the memtable is flushed.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">What does a Bloom filter save an LSM-tree from?</p>
+      <div class="opts">
+        <button>rewriting the same data during every single compaction</button>
+        <button>losing the memtable when the process crashes suddenly</button>
+        <button>splitting pages when a new key is inserted</button>
+        <button>reading disk files that cannot contain the key</button>
+      </div>
+      <p class="why">It answers "definitely not here" from memory, so a read skips that SSTable. It matters most for keys that don't exist anywhere.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">Why can a B-tree with 4 KB pages index hundreds of terabytes in only four levels?</p>
+      <div class="opts">
+        <button>every page is compressed before it is written</button>
+        <button>each page points to hundreds of child pages</button>
+        <button>the whole tree is always kept in memory</button>
+        <button>leaf pages hold only hashes of the keys</button>
+      </div>
+      <p class="why">Capacity grows as branching factor to the power of levels: 500⁴ pages × 4 KB ≈ 256 TB.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">An LSM-based store's p99 read latency climbs every afternoon while its write rate peaks. What's the likely cause?</p>
+      <div class="opts">
+        <button>the B-tree is splitting too many of its pages</button>
+        <button>the write-ahead log has grown too large to read</button>
+        <button>compaction is competing with live requests for disk bandwidth</button>
+        <button>the Bloom filters are returning too many definite answers</button>
+      </div>
+      <p class="why">Compaction and new writes share the same disk. If compaction falls behind, reads must also check more SSTables.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 3, "Data Structures That Power Your Database" up to "Other Indexing Structures"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=92">pp. 70–85</a>).
+      Read it with the figures. They are clearer than any re-drawing.</li>
+    <li>Then: <strong>Xu, Ch. 6, "Write path" and "Read path"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=105">pp. 105–106</a>) for how the same LSM ideas appear in an interview-style key-value store design.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/storage-engines.html">Storage engines cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">← 0006 · Clocks, pauses &amp; majorities</a>
+  <span class="disabled">Next: 0008 · Indexes in practice (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

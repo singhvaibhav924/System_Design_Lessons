@@ -16,6 +16,7 @@
 - Chart colours: --viz-1 blue, --viz-2 orange (validated with dataviz checker). Text never uses series colours.
 - `assets/avail-widgets.js`: .nines-calc, .composite-calc (series/parallel availability)
 - `assets/clock-widgets.js`: .lww-sim (last-write-wins + skew), .fencing-sim (lease/fencing step-through)
+- `assets/storage-widgets.js`: .lsm-sim (WAL + memtable + SSTables, reads w/ Bloom filter, compaction, crash replay, write-amp counter), .btree-lookup (root→leaf path), .btree-calc (branching^levels capacity)
 - `assets/sim-session.js`: stateful vs stateless load-balancer simulator (reuse in Phase 8 LB lesson)
 - `reference/*.html`: cheat sheets (one per topic cluster)
 - `resources/_extracted/*.txt`: text extracts of the PDFs, with `=====PAGE N=====` markers
@@ -23,6 +24,10 @@
 
 ## Phase 1 plan
 0001 scaling (done) → 0002 latency/throughput/percentiles (done) → 0003 availability/SLO/nines (done) → 0004 CAP + PACELC (done; DDIA Ch9 "The Cost of Linearizability", Abadi paper for PACELC) → 0005 distributed fundamentals (done by Codex, reviewed 2026-10-20; DDIA Ch8, Ch7 retries, Ch11 idempotence, Ch12 end-to-end) → 0006 clocks, pauses, failure detection, majority quorums, fencing (done; DDIA Ch8 pp.287–305 / PDF 309–327, Xu gossip). Phase 1 complete → next: Phase 2 Databases
+
+## Phase 2 plan (tentative)
+Order: internals first (B-tree/LSM underpin all index talk), then roadmap 2.1 relational topics, then replication/sharding.
+0007 storage engines: log, hash index, SSTables/LSM, B-trees, WAL, LSM vs B-tree (done; DDIA Ch3 PDF 92–107, Xu pp.105–106) → 0008 indexes in practice: secondary/composite/covering/clustered, query planner, buffer pool/page cache (DDIA PDF 107–112 + web gap: Use The Index, Luke; Postgres docs) → transactions & isolation (DDIA Ch7) → data models/SQL vs NoSQL, normalization → replication → replication lag → leaderless/quorums → sharding → consistent hashing → design a KV store (Xu Ch6)
 
 ## External sources used so far (not in local books)
 - Google SRE book (sre.google/sre-book): SLI/SLO/SLA, error budgets (lesson 0003)

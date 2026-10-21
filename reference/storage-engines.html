@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage Engines</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 2.2 (part 1)</p>
+<h1>Storage engines: LSM-trees &amp; B-trees</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0007-storage-engines-lsm-and-btrees.html">Lesson 0007</a>. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=92">DDIA Ch. 3, pp. 70–85</a>.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Index trade-off</h3><p>Extra structure kept on the side so reads don't scan. Speeds reads, slows <em>every</em> write. Choose indexes from real query patterns.</p><p class="from">DDIA p. 71</p></div>
+  <div class="card"><h3>Hash index (Bitcask)</h3><p>In-memory map key → byte offset in an append-only log. Fast, but all keys must fit in RAM and range queries are slow.</p><p class="from">DDIA pp. 72–75</p></div>
+  <div class="card"><h3>Segments, compaction, tombstones</h3><p>Log split into closed segment files. Background compaction keeps only the newest value per key into a <em>new</em> file. Deletes append a tombstone.</p><p class="from">DDIA Figs. 3-2, 3-3</p></div>
+  <div class="card"><h3>SSTable</h3><p>Segment file sorted by key, each key once. Merge like merge sort; sparse in-memory index (one key per few KB); compressible blocks.</p><p class="from">DDIA pp. 76–77</p></div>
+  <div class="card"><h3>LSM write path</h3><p>1. append to log (commit log) → 2. insert into sorted memtable → 3. flush full memtable as new SSTable, drop the log → 4. compact in background.</p><p class="from">DDIA p. 78 · Xu p. 105</p></div>
+  <div class="card"><h3>LSM read path</h3><p>Memtable → newest SSTable → … → oldest. Bloom filter per SSTable says “definitely not here” and skips the disk read. Missing keys are the worst case.</p><p class="from">DDIA p. 79 · Xu p. 106</p></div>
+  <div class="card"><h3>Compaction strategies</h3><p><b>Size-tiered</b>: small/new files merged into big/old ones (HBase). <b>Leveled</b>: key range split into small files in levels, more incremental, less space (LevelDB, RocksDB). Cassandra: both.</p><p class="from">DDIA p. 79</p></div>
+  <div class="card"><h3>B-tree</h3><p>Tree of fixed-size pages (4 KB+), updated in place. Branching factor in the hundreds → 3–4 levels. 500⁴ × 4 KB ≈ 256 TB. Inserts split full pages.</p><p class="from">DDIA pp. 79–81</p></div>
+  <div class="card"><h3>Write-ahead log (redo log)</h3><p>Every B-tree change is appended to the WAL <em>before</em> touching pages, so a crash mid-split can be repaired. Concurrency via latches.</p><p class="from">DDIA p. 82</p></div>
+  <div class="card"><h3>Write amplification</h3><p>One logical write → many physical disk writes over time (WAL + page, or repeated compaction). Limits write throughput; wears SSDs.</p><p class="from">DDIA p. 84</p></div>
+  <div class="card"><h3>LSM vs B-tree</h3><p>LSM: higher write throughput, smaller files; compaction can spike p99 and fall behind (monitor it!). B-tree: faster, predictable reads; one place per key suits transactions.</p><p class="from">DDIA pp. 83–85</p></div>
+  <div class="card"><h3>Who uses what</h3><p><b>LSM</b>: RocksDB, LevelDB, Cassandra, HBase, Lucene (similar). <b>B-tree</b>: PostgreSQL, MySQL InnoDB, most relational DBs. Flink and Kafka Streams keep state in RocksDB.</p></div>
+</div>
+</main>
+</body>
+</html>
