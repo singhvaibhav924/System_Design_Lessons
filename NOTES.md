@@ -7,6 +7,7 @@
 - **Jargon:** keep it low. Every term gets a hover (`<span class="term" data-tip="...">`). If it's taught later, add `data-later="Phase N · Topic"` so the user knows it's coming and doesn't worry.
 - **Glossary workflow:** when the user asks about a term that needs only 1–2 lines, spawn a background subagent that appends it to `glossary.md` (root) and returns nothing. Don't make separate HTML pages for single terms. Only give a term more attention if the user still finds it unclear.
 - **Organisation:** `index.html` (root) = TOC for all lessons, so update it with every new lesson. Lessons go in phase subfolders: `lessons/phase-NN-<slug>/NNNN-<slug>.html`. Lesson numbers are global and sequential.
+- **Phase plan up front (rule, 2026-10-22):** when starting any phase, list ALL its planned lessons in `index.html` immediately (greyed, `planned` badge), so the user sees how much of the phase remains. Flip each to a link + `new`/`done` as written.
 - Writing style: plain words, short sentences, ML-engineer framing ("In your world" callouts).
 
 ## Structure
