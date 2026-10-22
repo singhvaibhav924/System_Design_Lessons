@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indexes and Query Planning</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 2 (indexes)</p>
+<h1>Indexes &amp; query planning</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0008-indexes-in-practice.html">Lesson 0008</a>. Sources: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=107">DDIA pp. 85–89</a>, <a href="https://use-the-index-luke.com/">Use The Index, Luke</a>, <a href="https://www.postgresql.org/docs/current/using-explain.html">PostgreSQL docs</a>.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Primary vs secondary</h3><p>Primary key: unique, identifies the row. Secondary index (<code>CREATE INDEX</code>): keys can repeat; entries point to the row.</p><p class="from">DDIA pp. 85–86</p></div>
+  <div class="card"><h3>Heap vs clustered</h3><p><b>Heap</b> (PostgreSQL): rows unordered in a heap file, every index points into it. <b>Clustered</b> (InnoDB PK): rows live in the PK B-tree; secondary indexes store the PK → second lookup.</p><p class="from">DDIA p. 86</p></div>
+  <div class="card"><h3>Three steps of a lookup</h3><p>1. tree walk (bounded, 3–4 pages) 2. walk matching leaves 3. fetch each row from the table. Steps 2–3 grow with matches → indexes shine when they narrow to few rows.</p><p class="from">Winand, “Slow Indexes”</p></div>
+  <div class="card"><h3>Composite index</h3><p>Sorted by col 1, then col 2 within it (phone book). <b>Leftmost prefix</b>: (a,b,c) serves a, a+b, a+b+c, not b alone.</p><p class="from">DDIA p. 87 · Winand</p></div>
+  <div class="card"><h3>Column order</h3><p><b>Equality first, range last.</b> <code>user_id = ? AND ts BETWEEN …</code> → index <code>(user_id, ts)</code>. Range first narrows only by the range. Same index also serves <code>ORDER BY ts</code>.</p><p class="from">Winand, “Greater, Less and Between”</p></div>
+  <div class="card"><h3>Covering index</h3><p>Index holds every column the query needs → no table fetch (Index Only Scan). PostgreSQL: <code>CREATE INDEX … (k) INCLUDE (v)</code>. Costs size and write speed; best on rarely changing tables.</p><p class="from">DDIA p. 86 · PG docs</p></div>
+  <div class="card"><h3>Query planner</h3><p>Cost-based: estimates rows from statistics, picks the cheapest plan. Many matches → Seq Scan; some → Bitmap scan; one → Index Scan. Stats refreshed by (auto) <code>ANALYZE</code>.</p><p class="from">PG “Using EXPLAIN”</p></div>
+  <div class="card"><h3>EXPLAIN ANALYZE</h3><p>Runs the query (side effects happen!). Check <b>estimated vs actual rows</b> first. Cost units are arbitrary, not ms. <code>Buffers: shared hit</code> = pages from memory.</p><p class="from">PG docs</p></div>
+  <div class="card"><h3>Index killers</h3><p>Function on the column (<code>UPPER(name)</code>) → use an expression index. <code>LIKE '%x'</code> leading wildcard. Stale stats after bulk loads. Correlated columns underestimated.</p><p class="from">Winand · PG docs</p></div>
+  <div class="card"><h3>Buffer pool</h3><p>Pages (8 KB PG, 16 KB InnoDB) cached in RAM. PG <code>shared_buffers</code> ≈ 25% RAM to start; OS page cache holds more. Time queries warm and cold separately.</p><p class="from">PG docs · DDIA p. 89</p></div>
+  <div class="card"><h3>Other index types</h3><p>Multi-dimensional / R-tree (geo, Phase 11) · full-text inverted index (Lucene, Phase 11) · vector indexes (RAG, Phase 13).</p><p class="from">DDIA pp. 87–88</p></div>
+</div>
+</main>
+</body>
+</html>

@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indexes in Practice</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/storage-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0008</span>
+</nav>
+
+<p class="kicker">Phase 2.1 / 2.2 · Indexes and query planning</p>
+<h1>Indexes in practice: what the database does with your WHERE clause</h1>
+<p class="subtitle">Lesson 0007 built the B-tree. This lesson covers how real queries use it: which index gets picked, why the order of columns matters, and why "we added an index" sometimes changes nothing.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main sources</b> DDIA Ch. 3 "Other Indexing Structures" · Markus Winand, <em>Use The Index, Luke</em> · PostgreSQL docs</span>
+  <span><b>Roadmap topics</b> primary &amp; secondary keys · composite &amp; covering indexes · query planner · buffer pool</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Look at a query and an index and say whether the index helps, and how much. Pick the column order of a multi-column index. Read the first line of an
+  <code>EXPLAIN</code> plan and know what to check first when a query is slow.
+</div>
+
+<p>The roadmap asks you to understand this path "rather than treating SQL as magic":</p>
+<pre><code>query → query planner → index → page cache / disk → result</code></pre>
+<p>We'll go through it in order, but start in the middle, with how a table and its indexes are laid out, because everything else depends on it.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Where the rows live: heap files and clustered indexes</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Other Indexing Structures" and "Storing values within the index" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=107">pp. 85–87</a>
+</aside>
+
+<p>The <strong>primary key</strong> identifies one row. A <strong>secondary index</strong> (anything you add with <code>CREATE INDEX</code>) is on some
+other column, so its keys don't have to be unique: many rows can share a <code>user_id</code>. Both are usually B-trees. What differs between databases is
+<em>what the index entry points to</em>:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Heap file + indexes</th><th>Clustered index</th></tr></thead>
+  <tbody>
+    <tr><td>Where full rows live</td><td>A separate
+      <span class="term" data-tip="The table's own storage: rows in no particular order. Every index stores a pointer to a row's position in this file.">heap file</span>, in no particular order</td>
+      <td>Inside the primary-key B-tree's leaf pages</td></tr>
+    <tr><td>Secondary index stores</td><td>A pointer to the row's location in the heap</td><td>The row's primary key, so a second lookup in the primary-key tree follows</td></tr>
+    <tr><td>Example</td><td>PostgreSQL</td><td>MySQL's InnoDB ("the primary key of a table is always a clustered index")</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Kleppmann's point is that the heap avoids duplicating data across many indexes, while a clustered index saves the extra hop on reads. Either way,
+<strong>a lookup through a secondary index usually ends with a second step to fetch the row</strong>. That step turns out to be where most of the time goes.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>An index lookup is three steps, and only one is cheap for sure</h2>
+
+<aside class="side">
+  <span class="src">Winand, <em>Use The Index, Luke</em>, "Slow Indexes" —</span>
+  <a href="https://use-the-index-luke.com/sql/anatomy/slow-indexes">use-the-index-luke.com</a>
+</aside>
+
+<p>DDIA doesn't cover this part, so I'm using Markus Winand's <em>Use The Index, Luke</em>, the standard practical guide. He splits every index lookup into:</p>
+<ol>
+  <li><strong>Walk down the tree</strong> to the first matching entry. This is the 3–4 page reads from lesson 0007. "The only step that has an upper bound".</li>
+  <li><strong>Walk along the leaf pages</strong> while entries still match. With 50,000 matches, that's a lot of leaves.</li>
+  <li><strong>Fetch each matching row from the table.</strong> The rows are scattered across the heap, so each match can cost its own page read.</li>
+</ol>
+
+<div class="callout key">
+  <span class="label">The myth to drop</span>
+  <p>"It uses an index, so it's fast" is false. Step 1 is always cheap; steps 2 and 3 grow with the number of matching rows. An index helps most when
+  it narrows the result down to <em>few</em> rows. For a query matching half the table, reading the whole table front to back is often faster than
+  thousands of scattered row fetches, and the planner (section 05) knows this.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Multi-column indexes: the order of columns decides everything</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Multi-column indexes" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=109">p. 87</a>;
+  Winand, <a href="https://use-the-index-luke.com/sql/where-clause/the-equals-operator/concatenated-keys">"Concatenated Keys"</a> and
+  <a href="https://use-the-index-luke.com/sql/where-clause/searching-for-ranges/greater-less-between-tuning-sql-access-filter-predicates">"Greater, Less and Between"</a>
+</aside>
+
+<p>An index on <code>(last_name, first_name)</code> is a phone book. It's sorted by last name, and by first name only <em>within</em> each last name. So it's
+useful for "all the Smiths" and for "John Smith", but, in Kleppmann's words, "useless if you want to find all the people with a particular first name."
+The same entries are spread all over the book.</p>
+
+<p>Two rules follow:</p>
+<ul>
+  <li><strong>Leftmost prefix.</strong> An index on <code>(a, b, c)</code> helps queries on <code>a</code>, on <code>a + b</code>, or on <code>a + b + c</code>, but not on
+  <code>b</code> alone. Winand: the column order "has great impact on its usability", so choose it so that the index "can be used as often as possible".</li>
+  <li><strong>"Index for equality first, then for ranges."</strong> If a query has <code>user_id = 3</code> and <code>day BETWEEN 2 AND 4</code>, put
+  <code>user_id</code> first. Then the matches sit next to each other in the index. With <code>day</code> first, the index narrows only by day, and every user
+  in that date range has to be read and checked.</li>
+</ul>
+
+<div class="figure wide">
+  <div class="composite-index"></div>
+  <div class="caption">24 index entries for 4 users × 6 days, shown in index order (each cell is <code>first column · second column</code>). Switch the
+  index between <code>(user_id, day)</code> and <code>(day, user_id)</code> and compare the queries. "Read" means the database had to look at the entry.</div>
+</div>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>The classic feature-table query is "the latest features for this entity before time T": <code>WHERE entity_id = ? AND event_ts &lt;= ?</code>. That
+  needs an index on <code>(entity_id, event_ts)</code>, with equality first and the range second. Reversed, every lookup scans everyone's events in the
+  time range. A bonus: a B-tree returns entries in index order, so the same index also serves <code>ORDER BY event_ts DESC LIMIT 1</code> without a separate sort.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Covering indexes: skip the table entirely</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "covering index" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=108">pp. 86–87</a>;
+  PostgreSQL docs, <a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html">"Index-Only Scans and Covering Indexes"</a>
+</aside>
+
+<p>Step 3 (fetching rows) disappears if the index already contains every column the query needs. DDIA calls that a <strong>covering index</strong>: it
+stores some extra columns so that "some queries [can] be answered by using the index alone". In PostgreSQL you add the extra columns with
+<code>INCLUDE</code>:</p>
+<pre><code>-- query:  SELECT score FROM predictions WHERE request_id = ?;
+CREATE INDEX ON predictions (request_id) INCLUDE (score);</code></pre>
+
+<p>The plan then shows an <strong>Index Only Scan</strong>. There's a PostgreSQL detail: it may still check the table to confirm a row is visible to your
+transaction, so the gain is largest on tables that rarely change. The cost is the usual one for duplicated data: a bigger index and slower writes. The
+docs say to use included columns "conservatively".</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>The query planner: an estimator, not a rule-follower</h2>
+
+<aside class="side">
+  <span class="src">PostgreSQL docs, <a href="https://www.postgresql.org/docs/current/using-explain.html">"Using EXPLAIN"</a> and
+  <a href="https://www.postgresql.org/docs/current/planner-stats.html">"Statistics Used by the Planner"</a></span>
+</aside>
+
+<p>SQL says <em>what</em> you want, and the <strong>query planner</strong> decides <em>how</em> to get it. It considers several plans, estimates each one's cost from
+<strong>statistics</strong> about your data (row counts, common values, value distributions), and picks the cheapest. The PostgreSQL docs show the same query
+getting three different plans as the condition becomes more selective, on a 10,000-row table with an index on <code>unique1</code>:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Condition</th><th>Rows estimated</th><th>Plan chosen</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>unique1 &lt; 7000</code></td><td>7,000</td><td><strong>Seq Scan</strong> (whole table)</td><td>Most rows match, so reading everything in order is cheapest</td></tr>
+    <tr><td><code>unique1 &lt; 100</code></td><td>100</td><td><strong>Bitmap scan</strong></td><td>Use the index to collect row locations, then read those pages in disk order</td></tr>
+    <tr><td><code>unique1 = 42</code></td><td>1</td><td><strong>Index Scan</strong></td><td>One row: walk the tree, fetch it</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>That's the "it ignored my index!" mystery: often the planner was right. When it's wrong, the usual cause is a bad <strong>row estimate</strong>.
+<code>EXPLAIN</code> shows the plan and its estimates. <code>EXPLAIN ANALYZE</code> actually runs the query and adds the real numbers, and the docs say what to
+check first: "whether the estimated row counts are reasonably close to reality."</p>
+
+<pre><code>EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE ten &lt; 7;
+ Seq Scan on tenk1  (cost=0.00..470.00 rows=7000 width=244) (actual time=0.030..1.995 rows=7000.00 loops=1)
+                                       ^^^^^^^^^ estimate                               ^^^^^^^^^^^^ reality</code></pre>
+
+<div class="callout trap">
+  <span class="label">Common reasons the index isn't used</span>
+  <p><strong>Stale statistics.</strong> They're refreshed by <code>ANALYZE</code>, which normally runs automatically in the background. After a big bulk load,
+  the planner may still think the table is tiny. <strong>Correlated columns.</strong> The planner "normally assumes that multiple conditions are independent",
+  which can underestimate results badly (the docs show a city/state pair under-estimated a hundredfold). <strong>A function wrapped around the column.</strong>
+  <code>WHERE UPPER(name) = 'SMITH'</code> can't use an index on <code>name</code>, because the index holds <code>name</code>, not <code>UPPER(name)</code>. The fix is an
+  index on the exact expression (<a href="https://use-the-index-luke.com/sql/where-clause/functions/case-insensitive-search">Winand</a>). The same applies to
+  <code>LIKE '%term'</code>: a B-tree is sorted from the first character, so a leading wildcard gives it nothing to search by.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>The buffer pool: why the second run is faster</h2>
+
+<aside class="side">
+  <span class="src">PostgreSQL docs, <a href="https://www.postgresql.org/docs/current/runtime-config-resource.html"><code>shared_buffers</code></a>;
+  DDIA, "Keeping everything in memory" —
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=111">p. 89</a></span>
+</aside>
+
+<p>Databases don't read rows; they read <strong>pages</strong> (8 KB in PostgreSQL, 16 KB by default in InnoDB). Recently used pages are kept in RAM in the
+<strong>buffer pool</strong> (<code>shared_buffers</code> in PostgreSQL). For a dedicated server the docs suggest about 25% of RAM to start, "because PostgreSQL
+also relies on the operating system cache", which holds a second copy of recently read file pages. The <code>Buffers: shared hit=345</code> line in
+<code>EXPLAIN ANALYZE</code> output means all 345 pages came from memory.</p>
+
+<p>Two practical consequences:</p>
+<ul>
+  <li>The top levels of every busy B-tree are always in memory, so a "4-level" lookup usually costs only one or two real disk reads.</li>
+  <li><strong>Benchmark warm and cold separately.</strong> The first run of a query reads from disk and later runs hit the cache. Kleppmann makes a related
+  point: in-memory databases aren't fast mainly because they skip disk reads (a disk-based engine with enough RAM rarely reads disk either), but because they
+  avoid converting data into an on-disk format.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>Indexes beyond the B-tree, briefly</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Multi-column indexes" and "Full-text search and fuzzy indexes" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=109">pp. 87–88</a>
+</aside>
+
+<ul>
+  <li><strong>Multi-dimensional</strong>: "restaurants inside this map rectangle" needs latitude <em>and</em> longitude ranges at once, which a B-tree can't do
+  (it narrows only one range). Spatial indexes such as R-trees (PostGIS) handle it.
+  <span class="badge later">Phase 11 · geospatial</span></li>
+  <li><strong>Full-text</strong>: maps each word to the list of documents containing it, with fuzzy matching for typos (Lucene, Elasticsearch).
+  <span class="badge later">Phase 11 · search</span></li>
+  <li><strong>Vector indexes</strong>: "nearest embeddings to this one", the core of semantic search and RAG. Not in DDIA (2017).
+  <span class="badge later">Phase 13 · LLM systems</span></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">08</span>The page in five lines</h2>
+
+<ol>
+  <li>A secondary-index lookup = walk the tree (cheap), walk the matching leaves, then fetch each row from the table (heap or clustered primary key). The last two grow with the number of matches.</li>
+  <li>Indexes help most when they narrow to <strong>few rows</strong>. For broad queries, a full sequential scan can win.</li>
+  <li>Multi-column index: <strong>leftmost prefix</strong> only, and <strong>equality columns first, range column last</strong>.</li>
+  <li>A <strong>covering index</strong> holds every column the query needs, so the row fetch disappears (Index Only Scan), at the cost of size and write speed.</li>
+  <li>The <strong>planner</strong> picks plans from statistics. <code>EXPLAIN ANALYZE</code>: compare estimated vs actual rows first. Remember the buffer pool when timing queries.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">There's an index on <code>(user_id, created_at)</code>. Which query can't use it efficiently?</p>
+      <div class="opts">
+        <button>user_id = 7 with no date filter</button>
+        <button>created_at after 2026-01-01 with no user filter</button>
+        <button>user_id = 7 and created_at after 2026-01-01</button>
+        <button>user_id = 7, then sorted by created_at</button>
+      </div>
+      <p class="why">Leftmost prefix: the index is sorted by user_id first, so dates alone are scattered across every user's section.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">A query has <code>tenant_id = ?</code> and <code>ts BETWEEN ? AND ?</code>. Which column order is best?</p>
+      <div class="opts">
+        <button>(ts, tenant_id), because timestamps are more selective</button>
+        <button>either order, since the planner reorders columns</button>
+        <button>two separate single-column indexes, one per condition</button>
+        <button>(tenant_id, ts), equality first and range second</button>
+      </div>
+      <p class="why">With the equality column first, all matches sit in one contiguous slice. With the range first, the index narrows only by time.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">A query matches 60% of a large table, and the planner chooses a sequential scan over the index. Why?</p>
+      <div class="opts">
+        <button>reading everything in order beats thousands of scattered row fetches</button>
+        <button>the index must be corrupted, so the planner skips it</button>
+        <button>sequential scans are always chosen for tables over 1 GB</button>
+        <button>the planner never uses indexes for range conditions at all</button>
+      </div>
+      <p class="why">Index lookups pay one table fetch per match. For broad queries, scanning the table front to back is cheaper.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">What does a covering index remove from a lookup?</p>
+      <div class="opts">
+        <button>walking down the tree from the root</button>
+        <button>updating the index when rows are written</button>
+        <button>fetching each matching row from the table</button>
+        <button>reading the statistics before choosing the plan</button>
+      </div>
+      <p class="why">If the index holds every column the query needs, the database answers from the index alone (an Index Only Scan).</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">In <code>EXPLAIN ANALYZE</code> output, what should you check first?</p>
+      <div class="opts">
+        <button>whether the cost units add up to milliseconds</button>
+        <button>whether every node in the plan uses indexes</button>
+        <button>whether estimated rows are close to actual rows</button>
+        <button>whether the planning time is under one millisecond</button>
+      </div>
+      <p class="why">Bad row estimates are the usual root cause of bad plans. Cost units are arbitrary and don't map to milliseconds.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Markus Winand, <em>Use The Index, Luke</em></strong>: <a href="https://use-the-index-luke.com/sql/anatomy">Chapter 1 "Anatomy of an Index"</a> and
+      <a href="https://use-the-index-luke.com/sql/where-clause">Chapter 2 "The Where Clause"</a>. Free online, short pages, the best practical text on indexes.
+      Our books don't cover this part well.</li>
+    <li>Then: <strong>Kleppmann, <em>DDIA</em>, Ch. 3, "Other Indexing Structures"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=107">pp. 85–89</a>) and the PostgreSQL page
+      <a href="https://www.postgresql.org/docs/current/using-explain.html">"Using EXPLAIN"</a>.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/indexes.html">Indexes &amp; query planning cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0007-storage-engines-lsm-and-btrees.html">← 0007 · Storage engines: LSM-trees &amp; B-trees</a>
+  <span class="disabled">Next: 0009 · Transactions &amp; isolation (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

@@ -3,6 +3,7 @@
    <div class="lsm-sim"></div>      write-ahead log + memtable + SSTables, reads, compaction, crash
    <div class="btree-lookup"></div> follow one key from the root page down to a leaf (DDIA Fig. 3-6)
    <div class="btree-calc"></div>   branching factor × levels → capacity (DDIA p. 81)
+   <div class="composite-index"></div> column order of a two-column index vs. which entries a query must read
    ========================================================== */
 (function () {
   var css = "\
@@ -45,7 +46,14 @@
 .sw .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}\
 .sw .tile{border:1px solid var(--rule);border-radius:10px;padding:10px 12px;background:var(--surface)}\
 .sw .tile .t{font-size:12px;color:var(--ink-3)}\
-.sw .tile .v{font-size:20px;font-weight:600;font-family:var(--mono)}";
+.sw .tile .v{font-size:20px;font-weight:600;font-family:var(--mono)}\
+.sw .ix{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:4px;margin:8px 0 6px}\
+@media (max-width:600px){.sw .ix{grid-template-columns:repeat(6,minmax(0,1fr))}}\
+.sw .ix div{border:1px solid var(--rule);border-radius:6px;background:var(--surface);font-family:var(--mono);font-size:11.5px;text-align:center;padding:4px 0;line-height:1.3;color:var(--ink-3)}\
+.sw .ix div.read{border-color:var(--viz-1);color:var(--ink-2);background:color-mix(in srgb,var(--viz-1) 10%,transparent)}\
+.sw .ix div.match{background:color-mix(in srgb,var(--viz-1) 30%,transparent);color:var(--ink);font-weight:600}\
+.sw .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3);margin-bottom:6px}\
+.sw .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;border:1px solid var(--rule);vertical-align:-2px;margin-right:5px}";
   var st = document.createElement("style"); st.textContent = css; document.head.appendChild(st);
   function h(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
 
@@ -187,9 +195,49 @@
     draw();
   }
 
+
+  /* ---------- composite (multi-column) index ---------- */
+  function compositeIndex(root) {
+    root.classList.add("sw");
+    var Q = [
+      { t: "WHERE user_id = 3", c: { user_id: ["eq", 3] } },
+      { t: "WHERE user_id = 3 AND day BETWEEN 2 AND 4", c: { user_id: ["eq", 3], day: ["rng", 2, 4] } },
+      { t: "WHERE day = 5", c: { day: ["eq", 5] } },
+      { t: "WHERE day BETWEEN 2 AND 4", c: { day: ["rng", 2, 4] } }
+    ];
+    root.innerHTML = '<div class="ctrl"><label>Index on <select class="ord"><option value="user_id,day">(user_id, day)</option><option value="day,user_id">(day, user_id)</option></select></label>' +
+      '<label>Query <select class="q">' + Q.map(function (q, i) { return '<option value="' + i + '"' + (i === 1 ? " selected" : "") + ">" + q.t + "</option>"; }).join("") + "</select></label></div>" +
+      '<div class="legend"><span><i></i>not touched</span><span><i style="border-color:var(--viz-1);background:color-mix(in srgb,var(--viz-1) 10%,transparent)"></i>read, then thrown away</span><span><i style="background:color-mix(in srgb,var(--viz-1) 30%,transparent)"></i>read and matches</span></div>' +
+      '<div class="ix"></div><div class="big"></div>';
+    var ord = root.querySelector(".ord"), qs = root.querySelector(".q");
+    [ord, qs].forEach(function (e) { e.addEventListener("change", draw); });
+    var rows = []; for (var u = 1; u <= 4; u++) for (var d = 1; d <= 6; d++) rows.push({ user_id: u, day: d });
+    function ok(r, c) { return c[0] === "eq" ? r === c[1] : r >= c[1] && r <= c[2]; }
+    function draw() {
+      var cols = ord.value.split(","), q = Q[+qs.value].c;
+      var e = rows.slice().sort(function (a, b) { return a[cols[0]] - b[cols[0]] || a[cols[1]] - b[cols[1]]; });
+      // access predicates: equalities on leading columns, then at most one range; stop at the first column with no condition
+      var access = [];
+      for (var i = 0; i < cols.length; i++) { var c = q[cols[i]]; if (!c) break; access.push(cols[i]); if (c[0] === "rng") break; }
+      var read = e.map(function (r) { return access.every(function (k) { return ok(r[k], q[k]); }); });
+      var match = e.map(function (r) { return Object.keys(q).every(function (k) { return ok(r[k], q[k]); }); });
+      root.querySelector(".ix").innerHTML = e.map(function (r, i) {
+        return '<div class="' + (match[i] ? "read match" : access.length && read[i] ? "read" : !access.length ? "read" : "") + '">' + r[cols[0]] + "·" + r[cols[1]] + "</div>";
+      }).join("");
+      var nRead = access.length ? read.filter(Boolean).length : e.length, nMatch = match.filter(Boolean).length;
+      var msg;
+      if (!access.length) msg = "The index is sorted by " + cols[0] + " first, and this query doesn't constrain " + cols[0] + ". Matching entries are scattered, so the whole index (or the table) must be scanned.";
+      else if (nRead === nMatch) msg = "Every entry read is a match: the query's conditions mark the start and end of one contiguous slice of the index.";
+      else msg = "The index narrows the search using " + access.join(" and ") + " only. Within that slice, " + Object.keys(q).filter(function (k) { return access.indexOf(k) < 0 || q[k][0] === "rng"; }).filter(function (k) { return access.indexOf(k) < 0; }).join(", ") + " is checked entry by entry and most entries are thrown away.";
+      root.querySelector(".big").innerHTML = nRead + " of " + e.length + " entries read · " + nMatch + " match<small>" + msg + "</small>";
+    }
+    draw();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll(".lsm-sim").forEach(lsmSim);
     document.querySelectorAll(".btree-lookup").forEach(btreeLookup);
     document.querySelectorAll(".btree-calc").forEach(btreeCalc);
+    document.querySelectorAll(".composite-index").forEach(compositeIndex);
   });
 })();

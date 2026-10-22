@@ -16,6 +16,10 @@ Local PDFs are in `resources/`. Plain-text extracts (for searching and citing) a
   Recommended in the roadmap as a checklist/reference, not as a teacher.
 - [AWS docs: Regions and Availability Zones](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html)
   Use for: fault domains in real clouds.
+- [Use The Index, Luke (Markus Winand)](https://use-the-index-luke.com/)
+  Free online book on SQL indexing. Use for: index anatomy, concatenated keys (column order, equality-then-range), function-based indexes, why indexes can be slow. Fills the gap DDIA leaves on practical indexing (lesson 0008).
+- [PostgreSQL docs: Using EXPLAIN, Planner Statistics, Index-Only Scans, shared_buffers](https://www.postgresql.org/docs/current/using-explain.html)
+  Use for: query planner behaviour, EXPLAIN ANALYZE, covering indexes, buffer pool sizing (lesson 0008).
 
 ## Gaps
 - LLM-serving specifics (KV cache, continuous batching, semantic caching, gateways) aren't in any local book. Will need primary web sources (vLLM paper, provider docs) when Phase 13 arrives.

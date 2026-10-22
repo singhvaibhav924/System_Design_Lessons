@@ -16,7 +16,7 @@
 - Chart colours: --viz-1 blue, --viz-2 orange (validated with dataviz checker). Text never uses series colours.
 - `assets/avail-widgets.js`: .nines-calc, .composite-calc (series/parallel availability)
 - `assets/clock-widgets.js`: .lww-sim (last-write-wins + skew), .fencing-sim (lease/fencing step-through)
-- `assets/storage-widgets.js`: .lsm-sim (WAL + memtable + SSTables, reads w/ Bloom filter, compaction, crash replay, write-amp counter), .btree-lookup (root→leaf path), .btree-calc (branching^levels capacity)
+- `assets/storage-widgets.js`: .composite-index (column order vs entries read), .lsm-sim (WAL + memtable + SSTables, reads w/ Bloom filter, compaction, crash replay, write-amp counter), .btree-lookup (root→leaf path), .btree-calc (branching^levels capacity)
 - `assets/sim-session.js`: stateful vs stateless load-balancer simulator (reuse in Phase 8 LB lesson)
 - `reference/*.html`: cheat sheets (one per topic cluster)
 - `resources/_extracted/*.txt`: text extracts of the PDFs, with `=====PAGE N=====` markers
@@ -27,9 +27,10 @@
 
 ## Phase 2 plan (tentative)
 Order: internals first (B-tree/LSM underpin all index talk), then roadmap 2.1 relational topics, then replication/sharding.
-0007 storage engines: log, hash index, SSTables/LSM, B-trees, WAL, LSM vs B-tree (done; DDIA Ch3 PDF 92–107, Xu pp.105–106) → 0008 indexes in practice: secondary/composite/covering/clustered, query planner, buffer pool/page cache (DDIA PDF 107–112 + web gap: Use The Index, Luke; Postgres docs) → transactions & isolation (DDIA Ch7) → data models/SQL vs NoSQL, normalization → replication → replication lag → leaderless/quorums → sharding → consistent hashing → design a KV store (Xu Ch6)
+0007 storage engines: log, hash index, SSTables/LSM, B-trees, WAL, LSM vs B-tree (done; DDIA Ch3 PDF 92–107, Xu pp.105–106) → 0008 indexes in practice: heap vs clustered, 3-step lookup, composite (leftmost, equality-then-range), covering/INCLUDE, planner + EXPLAIN, buffer pool (done; DDIA PDF 107–111 + Winand + Postgres docs) → transactions & isolation (DDIA Ch7) → data models/SQL vs NoSQL, normalization → replication → replication lag → leaderless/quorums → sharding → consistent hashing → design a KV store (Xu Ch6)
 
 ## External sources used so far (not in local books)
+- Markus Winand, Use The Index, Luke (slow indexes, concatenated keys, equality-then-range, function indexes) and PostgreSQL docs (EXPLAIN, planner stats, index-only scans, shared_buffers): lesson 0008
 - Google SRE book (sre.google/sre-book): SLI/SLO/SLA, error budgets (lesson 0003)
 - AWS S3 durability doc (lesson 0003); Dean & Barroso 'Tail at Scale' (0002); Little's law / M/M/1 Wikipedia (0002)
 - AWS Builders' Library 'Timeouts, retries, and backoff with jitter' (jitter, 243x amplification) — added to 0005 in review
