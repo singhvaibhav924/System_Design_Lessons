@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transactions and Isolation</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/txn-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0009</span>
+</nav>
+
+<p class="kicker">Phase 2.1 · Transactions (part 1)</p>
+<h1>Transactions: what ACID really promises, and what your database actually does</h1>
+<p class="subtitle">"It's an ACID database" sounds like a full guarantee. This lesson shows what each letter means, and why your database's default settings still let some concurrency bugs through.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main source</b> DDIA Ch. 7 "Transactions", up to "Preventing Lost Updates"</span>
+  <span><b>Roadmap topics</b> transactions · ACID · isolation levels · MVCC</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain each letter of ACID in one honest sentence. Name the problem that <strong>read committed</strong> and <strong>snapshot isolation</strong> each prevent
+  (and the ones they don't). Explain how a database lets readers and writers work at the same time without blocking each other (<strong>MVCC</strong>).
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>What a transaction is for</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 7 introduction —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=243">pp. 221–223</a>
+</aside>
+
+<p>Kleppmann opens with a list of what goes wrong: the database or app crashes mid-write, the network cuts out, several clients overwrite each other,
+someone reads half-updated data. A <strong>transaction</strong> groups several reads and writes into one unit. Either all of it succeeds (<strong>commit</strong>) or
+none of it takes effect (<strong>abort</strong> / rollback), and then "the application can safely retry."</p>
+
+<p>Transactions "are not a law of nature". They were invented to make application code simpler: the database handles a whole class of failures so your
+code doesn't have to. Kleppmann also dismisses both popular extremes: "transactions don't scale" and "serious apps need ACID" are "both pure hyperbole".</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>ACID, one honest sentence per letter</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "The Meaning of ACID" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=245">pp. 223–227</a>
+</aside>
+
+<p>His warning comes first: "one database's implementation of ACID does not equal another's", and "ACID has unfortunately become mostly a marketing term."</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Letter</th><th>What it actually means</th><th>Whose job</th></tr></thead>
+  <tbody>
+    <tr><td><strong>A</strong>tomicity</td><td>If something fails partway, every write in the transaction is undone. It's not about concurrency.
+      Kleppmann: "perhaps <em>abortability</em> would have been a better term".</td><td>Database</td></tr>
+    <tr><td><strong>C</strong>onsistency</td><td>Your own rules about the data ("debits and credits balance") stay true. The database can't know those rules, beyond
+      constraints like foreign keys and uniqueness. "The letter C doesn't really belong in ACID". It was reportedly "tossed in to make the acronym work".</td><td><strong>Your application</strong></td></tr>
+    <tr><td><strong>I</strong>solation</td><td>Transactions running at the same time don't step on each other. The textbook ideal is <em>serializable</em>: the result is as if
+      they ran one after another. In practice most databases default to something weaker (this lesson and the next).</td><td>Database</td></tr>
+    <tr><td><strong>D</strong>urability</td><td>Once committed, the data isn't forgotten. That means written to disk with a write-ahead log (<a href="0007-storage-engines-lsm-and-btrees.html">lesson 0007</a>),
+      and/or copied to other machines. "Perfect durability does not exist."</td><td>Database</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout trap">
+  <span class="label">"Consistency" means four different things</span>
+  <p>Kleppmann counts at least four: replicas agreeing eventually (<span class="term" data-tip="Copies of the data on different machines that may briefly disagree, then converge." data-later="Phase 2 · Replication lag">replica consistency</span>),
+  <span class="term" data-tip="A way of assigning keys to machines so that adding a machine moves only a small share of keys." data-later="Phase 2 · Consistent hashing">consistent hashing</span>,
+  the C in CAP, which means linearizability (<a href="../phase-01-vocabulary/0004-cap-theorem-and-pacelc.html">lesson 0004</a>), and the C in ACID, which
+  means your application's rules. In an interview, say which one you mean. And <strong>BASE</strong> ("basically available, soft state, eventual consistency"),
+  the supposed opposite of ACID, is "even more vague". Its only sensible definition is "not ACID".</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Why you need more than one-row updates</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Single-Object and Multi-Object Operations", Figs. 7-2, 7-3 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=250">pp. 228–231</a>
+</aside>
+
+<p>Kleppmann's example: an email app stores an <code>unread_count</code> next to the emails, so it doesn't have to count them on every page load. Now each new
+email means <em>two</em> writes: insert the email and increment the counter.</p>
+<ul>
+  <li>Without <strong>isolation</strong>, a reader can catch the moment between them: the inbox shows a new email while the counter still says 0.</li>
+  <li>Without <strong>atomicity</strong>, a crash between them leaves the two out of sync for good.</li>
+</ul>
+
+<p>Almost every storage engine makes a <em>single</em> row or document update atomic and isolated, so you never see half a JSON document. Many also offer
+single-object tools such as an atomic increment and <span class="term" data-tip="'Write this value only if the current value is still X.' If someone changed it in the meantime, the write fails and you retry." data-later="Lesson 0010 · Preventing lost updates">compare-and-set</span>.
+These are useful, but Kleppmann calls it "misleading" when vendors market them as "lightweight transactions" or even "ACID". A transaction means grouping
+<em>several</em> objects. He also notes that a key-value store's multi-put "doesn't necessarily" have transaction semantics: some keys can succeed while
+others fail.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>"Register model v7, mark it as production, demote v6" is three writes that must happen together. If a crash leaves two models marked production, or none,
+  your serving layer has a real problem. That belongs in one transaction. The same applies to any denormalized counter or summary next to the raw data, such as
+  "number of labelled examples" stored beside the examples.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Aborts exist so you can retry, carefully</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Handling errors and aborts" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=253">pp. 231–232</a>
+</aside>
+
+<p>"The whole point of aborts is to enable safe retries", yet popular ORMs such as Django and Rails ActiveRecord don't retry aborted transactions. The error just
+becomes an exception. Kleppmann's caveats on retrying are exactly <a href="../phase-01-vocabulary/0005-partial-failure-timeouts-retries-idempotency.html">lesson 0005</a>
+applied to databases:</p>
+<ul>
+  <li>The commit may have <em>succeeded</em> with only the acknowledgement lost, so a retry runs it twice unless you deduplicate (idempotency keys).</li>
+  <li>If the error is overload, retries make it worse: limit them and use exponential backoff.</li>
+  <li>Retry only temporary errors (deadlock, failover, isolation conflicts), not permanent ones (a constraint violation will fail again).</li>
+  <li>Side effects outside the database, such as sending an email, are not rolled back.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Read committed: the default almost everywhere</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Weak Isolation Levels" and "Read Committed", Figs. 7-4, 7-5 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=255">pp. 233–237</a>
+</aside>
+
+<p>Full serializable isolation costs performance, so databases offer weaker <strong>isolation levels</strong>. They are "much harder to understand", and the bugs
+they allow "have caused substantial loss of money". Kleppmann's point: "use an ACID database" doesn't save you, because those databases mostly default to weak
+isolation too.</p>
+
+<p>The basic level is <strong>read committed</strong>, the default in PostgreSQL, Oracle and SQL Server. It makes two promises:</p>
+<ul>
+  <li><strong>No dirty reads.</strong> You never see another transaction's uncommitted writes. Its changes appear all at once when it commits.</li>
+  <li><strong>No dirty writes.</strong> You never overwrite another transaction's uncommitted write; you wait until it commits or aborts. Kleppmann's example:
+  without this, two buyers of the same used car could end up with Bob recorded as the buyer and Alice receiving the invoice.</li>
+</ul>
+
+<p>How it's built: writers take a <strong>row lock</strong> and hold it until commit. Readers <em>don't</em> lock (a long write would stall every reader). Instead
+the database keeps the old committed value and gives it to readers until the new one commits.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>Read skew, and the fix: snapshot isolation (MVCC)</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Snapshot Isolation and Repeatable Read", Figs. 7-6, 7-7 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=259">pp. 237–241</a>
+</aside>
+
+<p>Read committed still allows this: Alice has $500 in each of two accounts. While $100 is being transferred between them, she reads one account before the transfer
+and the other after it, and sees $900 in total. Every value she read <em>was</em> committed, just at different moments. This is <strong>read skew</strong>, also called a
+<strong>non-repeatable read</strong>: reading the same row twice gives different answers.</p>
+
+<p>For Alice a reload fixes it. For a <strong>backup</strong> or a long <strong>analytics query</strong>, it doesn't: a backup taken this way permanently contains
+half-applied transfers. The fix is <strong>snapshot isolation</strong>: each transaction reads from "a consistent snapshot of the database", meaning everything committed
+when the transaction <em>started</em>, and nothing later.</p>
+
+<p>The implementation is <strong>multi-version concurrency control (MVCC)</strong>. Every transaction gets an increasing ID. Rows are never updated in place: an update
+marks the old version <code>deleted_by</code> the writer and adds a new version <code>created_by</code> it. When you read, you see only versions created by transactions that
+had committed when <em>you</em> started. Step through it at each level:</p>
+
+<div class="figure wide">
+  <div class="isolation-sim"></div>
+  <div class="caption">DDIA's Figs. 7-6 and 7-7 combined. Alice is transaction 12, the transfer is transaction 13. Run all five steps under each level and watch both
+  "what Alice sees" and which stored version (highlighted) her reads pick. Read uncommitted is shown only for contrast; few systems use it.</div>
+</div>
+
+<div class="callout key">
+  <span class="label">The property that makes it popular</span>
+  <p>With snapshot isolation, "readers never block writers, and writers never block readers". A three-hour report and a stream of live writes can run together
+  without waiting on each other's locks. Old versions are removed later by a background garbage-collection process once no transaction can still see them.
+  In PostgreSQL that process is <span class="term" data-tip="PostgreSQL's background cleanup that removes row versions no running transaction can see any more, so the space can be reused.">VACUUM</span>.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The naming mess</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Repeatable read and naming confusion" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=264">p. 242</a>
+</aside>
+
+<p>The SQL standard dates from before snapshot isolation existed, so databases ship it under borrowed names. PostgreSQL and MySQL call it
+<strong>repeatable read</strong>. Oracle calls it <strong>serializable</strong>, even though it isn't. IBM DB2 uses "repeatable read" for real serializability.
+Kleppmann's summary: "nobody really knows what repeatable read means." Always check what your database's level actually prevents.</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Level (what it really is)</th><th>Dirty read</th><th>Dirty write</th><th>Read skew</th><th>Lost update / write skew</th></tr></thead>
+  <tbody>
+    <tr><td>Read uncommitted</td><td>possible</td><td>prevented</td><td>possible</td><td>possible</td></tr>
+    <tr><td>Read committed <small>(PostgreSQL default)</small></td><td>prevented</td><td>prevented</td><td>possible</td><td>possible</td></tr>
+    <tr><td>Snapshot isolation <small>("repeatable read" in PostgreSQL/MySQL)</small></td><td>prevented</td><td>prevented</td><td>prevented</td><td>partly, see 0010</td></tr>
+    <tr><td>Serializable</td><td>prevented</td><td>prevented</td><td>prevented</td><td>prevented</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Exporting a training set or a feature backfill from a live PostgreSQL database is exactly the "long analytics query" case. Under the default read committed, rows
+  read early and late in the export reflect different moments, so joined tables can disagree. Run the export in one <code>REPEATABLE READ</code> (snapshot)
+  transaction and the dataset matches a single point in time. The cost: a snapshot open for hours keeps old row versions from being cleaned up, so tables grow
+  while it runs.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">08</span>The page in five lines</h2>
+
+<ol>
+  <li>A transaction makes a group of writes all-or-nothing, so the application can simply abort and retry. Retry with lesson 0005's care (idempotency, backoff, temporary errors only).</li>
+  <li>ACID: <strong>A</strong> = abortability, <strong>C</strong> = your app's rules, <strong>I</strong> = isolation (rarely full serializability), <strong>D</strong> = disk + WAL and/or replicas. "ACID" alone tells you little.</li>
+  <li><strong>Read committed</strong> (common default): no dirty reads, no dirty writes. Still allows read skew.</li>
+  <li><strong>Snapshot isolation</strong> via <strong>MVCC</strong>: each transaction reads a frozen point in time, and readers and writers don't block each other. Use it for backups, exports and analytics.</li>
+  <li>Level names are unreliable: "repeatable read" in PostgreSQL/MySQL means snapshot isolation, and Oracle's "serializable" isn't.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Which ACID property is the application's responsibility rather than the database's?</p>
+      <div class="opts">
+        <button>atomicity, undoing writes after a failure</button>
+        <button>isolation, separating transactions that run together</button>
+        <button>consistency, keeping your own data rules</button>
+        <button>durability, keeping data after a commit</button>
+      </div>
+      <p class="why">The database can't know your invariants beyond constraints. C is a property of the application.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Under read committed, a report reads table A, then table B, while transfers run. What can go wrong?</p>
+      <div class="opts">
+        <button>the two reads reflect two different moments</button>
+        <button>the report sees writes later rolled back</button>
+        <button>two transactions overwrite each other's uncommitted rows</button>
+        <button>the report blocks writers until it finishes</button>
+      </div>
+      <p class="why">That's read skew: every value was committed, just not at the same moment. Snapshot isolation fixes it.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">How does MVCC let a long read run without blocking writers?</p>
+      <div class="opts">
+        <button>it locks each row briefly, then releases it again</button>
+        <button>it copies the entire database before reading</button>
+        <button>it sends all readers to a replica server</button>
+        <button>it keeps old row versions the reader sees</button>
+      </div>
+      <p class="why">Writers add new versions instead of overwriting. The reader keeps seeing versions committed before it started.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">PostgreSQL's "repeatable read" level is really which of these?</p>
+      <div class="opts">
+        <button>full serializable isolation with locks</button>
+        <button>snapshot isolation using row versions</button>
+        <button>read committed with row-level locks</button>
+        <button>read uncommitted allowing dirty reads</button>
+      </div>
+      <p class="why">PostgreSQL and MySQL use the standard's name for their snapshot isolation level.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">A transaction's commit times out on the client. Why is a blind retry risky?</p>
+      <div class="opts">
+        <button>aborted transactions can never be retried at all</button>
+        <button>the database locks the table after any timeout</button>
+        <button>the commit may have succeeded already, running twice</button>
+        <button>retries always pick a weaker isolation level instead</button>
+      </div>
+      <p class="why">Only the acknowledgement may have been lost. Without deduplication (an idempotency key), the retry applies the change again.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 7, from the start through "Repeatable read and naming confusion"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=243">pp. 221–242</a>).
+      The figures for read skew (7-6) and MVCC (7-7) are worth studying in the book.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/transactions.html">Transactions &amp; isolation cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0008-indexes-in-practice.html">← 0008 · Indexes in practice</a>
+  <span class="disabled">Next: 0010 · Lost updates, write skew &amp; serializability (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

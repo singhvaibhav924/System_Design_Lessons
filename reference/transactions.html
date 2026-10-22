@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transactions and Isolation</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 2 (transactions)</p>
+<h1>Transactions &amp; isolation</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0009-transactions-acid-and-snapshot-isolation.html">Lesson 0009</a>. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=243">DDIA Ch. 7</a>. Lesson 0010 will add lost updates, write skew and serializability.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Transaction</h3><p>Group of reads/writes: all commit or all abort. Point of aborts = safe retry. Not a law of nature, a programming-model simplification.</p><p class="from">DDIA pp. 221–223</p></div>
+  <div class="card"><h3>A · Atomicity</h3><p>“Abortability”: on failure, every write in the transaction is undone. Not about concurrency.</p><p class="from">DDIA p. 224</p></div>
+  <div class="card"><h3>C · Consistency</h3><p>Your application's invariants. DB enforces only constraints (FK, unique). “Doesn't really belong in ACID.”</p><p class="from">DDIA p. 225</p></div>
+  <div class="card"><h3>I · Isolation</h3><p>Concurrent transactions don't interfere. Ideal = serializable; defaults are weaker.</p><p class="from">DDIA p. 225</p></div>
+  <div class="card"><h3>D · Durability</h3><p>Committed data survives: disk + WAL and/or replicas. Nothing is perfect; combine disk, replication, backups.</p><p class="from">DDIA pp. 226–227</p></div>
+  <div class="card"><h3>4 meanings of “consistency”</h3><p>Replica (eventual) consistency · consistent hashing · CAP C = linearizability · ACID C = app invariants. Say which one.</p><p class="from">DDIA p. 224</p></div>
+  <div class="card"><h3>Multi-object</h3><p>Denormalized counters, FKs, secondary indexes need several writes kept in sync. Single-object CAS/increment ≠ transaction. KV multi-put may partially fail.</p><p class="from">DDIA pp. 228–231</p></div>
+  <div class="card"><h3>Retrying aborts</h3><p>Commit may have succeeded (dedupe / idempotency key) · overload: cap + backoff · only transient errors · external side effects not rolled back.</p><p class="from">DDIA p. 232</p></div>
+  <div class="card"><h3>Read committed</h3><p>No dirty reads, no dirty writes. Writers row-lock until commit; readers get old committed value. Default: PostgreSQL, Oracle, SQL Server. Allows read skew.</p><p class="from">DDIA pp. 234–237</p></div>
+  <div class="card"><h3>Read skew</h3><p>Non-repeatable read: values from different moments in one transaction (Alice's $900). Fatal for backups, exports, analytics.</p><p class="from">DDIA Fig. 7-6</p></div>
+  <div class="card"><h3>Snapshot isolation / MVCC</h3><p>Each txn sees data committed before it started. Rows versioned with created_by / deleted_by txids. Readers never block writers and vice versa. GC (VACUUM) removes old versions.</p><p class="from">DDIA pp. 238–241</p></div>
+  <div class="card"><h3>Naming mess</h3><p>PostgreSQL/MySQL “repeatable read” = snapshot isolation. Oracle “serializable” = snapshot isolation. DB2 “repeatable read” = serializable. Check what your level prevents.</p><p class="from">DDIA p. 242</p></div>
+</div>
+</main>
+</body>
+</html>
