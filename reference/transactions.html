@@ -21,7 +21,7 @@
 
 <p class="kicker">Reference · Phase 2 (transactions)</p>
 <h1>Transactions &amp; isolation</h1>
-<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0009-transactions-acid-and-snapshot-isolation.html">Lesson 0009</a>. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=243">DDIA Ch. 7</a>. Lesson 0010 will add lost updates, write skew and serializability.</p>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0009-transactions-acid-and-snapshot-isolation.html">Lesson 0009</a>. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=243">DDIA Ch. 7</a>. Second half: <a href="../lessons/phase-02-databases/0010-lost-updates-write-skew-serializability.html">Lesson 0010</a>.</p>
 
 <div class="card-grid wide">
   <div class="card"><h3>Transaction</h3><p>Group of reads/writes: all commit or all abort. Point of aborts = safe retry. Not a law of nature, a programming-model simplification.</p><p class="from">DDIA pp. 221–223</p></div>
@@ -36,6 +36,14 @@
   <div class="card"><h3>Read skew</h3><p>Non-repeatable read: values from different moments in one transaction (Alice's $900). Fatal for backups, exports, analytics.</p><p class="from">DDIA Fig. 7-6</p></div>
   <div class="card"><h3>Snapshot isolation / MVCC</h3><p>Each txn sees data committed before it started. Rows versioned with created_by / deleted_by txids. Readers never block writers and vice versa. GC (VACUUM) removes old versions.</p><p class="from">DDIA pp. 238–241</p></div>
   <div class="card"><h3>Naming mess</h3><p>PostgreSQL/MySQL “repeatable read” = snapshot isolation. Oracle “serializable” = snapshot isolation. DB2 “repeatable read” = serializable. Check what your level prevents.</p><p class="from">DDIA p. 242</p></div>
+  <div class="card"><h3>Lost update</h3><p>Two read-modify-write cycles on the same row; second write clobbers the first. Counters, JSON list edits, wiki saves.</p><p class="from">DDIA p. 243</p></div>
+  <div class="card"><h3>Lost-update fixes</h3><p>Atomic <code>SET x = x + 1</code> (best) · <code>SELECT … FOR UPDATE</code> · auto-detection (PG repeatable read yes, <b>MySQL repeatable read no</b>) · compare-and-set (check snapshot semantics). Replicas: merge siblings; LWW loses updates.</p><p class="from">DDIA pp. 243–246</p></div>
+  <div class="card"><h3>Write skew</h3><p>Two txns read the same condition, each writes a <em>different</em> row, together break the rule (doctors on call). Not caught by SI anywhere. Fix: FOR UPDATE on rows read, or serializable.</p><p class="from">DDIA pp. 246–248</p></div>
+  <div class="card"><h3>Phantoms</h3><p>Check is “no matching row exists” (booking, username, double-spend) → nothing to lock. Fix: unique constraint · materialize conflicts (lock-only rows; last resort) · serializable.</p><p class="from">DDIA pp. 249–251</p></div>
+  <div class="card"><h3>Serial execution</h3><p>One thread, stored procedures, data in RAM. Redis (Lua), VoltDB, Datomic. One slow txn stalls all; one core unless partitioned; cross-partition ~1k/s (VoltDB).</p><p class="from">DDIA pp. 252–256</p></div>
+  <div class="card"><h3>Two-phase locking (2PL)</h3><p>Shared locks for reads, exclusive for writes, all held to commit. Readers & writers block each other. Index-range locks for phantoms. Deadlocks, bad p99. MySQL/SQL Server serializable. ≠ 2PC.</p><p class="from">DDIA pp. 257–261</p></div>
+  <div class="card"><h3>SSI</h3><p>Snapshot isolation + track reads; abort at commit if premise went stale. Optimistic, no blocking, predictable latency; aborts under contention. PostgreSQL SERIALIZABLE, FoundationDB.</p><p class="from">DDIA pp. 261–266</p></div>
+  <div class="card"><h3>Always</h3><p>Any of these fixes means the app must <b>retry</b> aborted transactions (deadlock, serialization failure).</p></div>
 </div>
 </main>
 </body>

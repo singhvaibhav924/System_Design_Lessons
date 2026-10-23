@@ -2,6 +2,8 @@
    Transaction widgets (DDIA Ch. 7)
    <div class="isolation-sim"></div>  Alice reads her balances while a transfer runs (DDIA Figs. 7-4, 7-6, 7-7),
                                       under read uncommitted / read committed / snapshot isolation, with MVCC row versions
+   <div class="writeskew-sim"></div>  two on-call doctors both go off call (DDIA Figs. 7-8, 7-11) under snapshot isolation,
+                                      SELECT ... FOR UPDATE, and serializable snapshot isolation
    ========================================================== */
 (function () {
   var css = "\
@@ -112,7 +114,65 @@
     reset();
   }
 
+
+  function writeSkewSim(root) {
+    root.classList.add("tw");
+    var MODES = [["si", "Snapshot isolation"], ["lock", "SI + SELECT … FOR UPDATE"], ["ssi", "Serializable (SSI)"]];
+    root.innerHTML = '<div class="ctrl"><span style="color:var(--ink-2)">Database setting</span><span class="seg">' +
+      MODES.map(function (m) { return '<button data-m="' + m[0] + '">' + m[1] + "</button>"; }).join("") + "</span></div>" +
+      '<div class="btns"><button class="primary nx"></button><button class="rs">Reset</button></div>' +
+      '<div class="cols"><div><p class="zone">Doctors table, shift 1234 (committed state)</p><table><thead><tr><th>doctor</th><th>on_call</th><th>lock / note</th></tr></thead><tbody class="rows"></tbody></table></div>' +
+      '<div><p class="zone">Rule the app must keep</p><div class="view"><div class="row"><span>At least one doctor on call</span><b class="cnt"></b></div></div></div></div>' +
+      '<div class="verdict"></div><ul class="log"></ul>';
+    var mode = "si", S;
+    function reset() { S = { i: 0, on: { Alice: true, Bob: true }, pend: {}, lock: null, bobWait: false, bobDone: false, log: [], end: null }; render(); }
+    var STEPS = [
+      function () { if (mode === "lock") { S.lock = "Alice"; return "Alice's transaction (42) runs <code>SELECT … WHERE on_call FOR UPDATE</code>: 2 doctors on call, and both rows are now locked by Alice."; }
+        return "Alice's transaction (42) counts doctors on call: <strong>2</strong>. Safe for her to leave, she thinks."; },
+      function () { if (mode === "lock") { S.bobWait = true; return "Bob's transaction (43) runs the same <code>SELECT … FOR UPDATE</code>, hits Alice's locks and <strong>waits</strong>."; }
+        return "Bob's transaction (43) counts doctors on call: also <strong>2</strong>. His snapshot doesn't show Alice's plans."; },
+      function () { S.pend.Alice = true; return "Alice sets <code>on_call = false</code> on <em>her own</em> row (not committed yet)."; },
+      function () { if (mode === "lock") return "Bob is still waiting for Alice's locks, so he does nothing."; S.pend.Bob = true;
+        return "Bob sets <code>on_call = false</code> on <em>his own</em> row. A different row from Alice's, so there's no write conflict and no lost update to detect."; },
+      function () { S.on.Alice = false; S.pend.Alice = false; S.lock = null;
+        if (mode === "lock") { S.bobWait = false; S.bobDone = true; S.end = "ok";
+          return "Alice commits and releases the locks. Bob's query finally runs and sees <strong>1</strong> doctor on call, so the app refuses his request. The rule holds."; }
+        return "Alice commits. Successfully."; },
+      function () {
+        if (mode === "lock") return "Nothing left to do: Bob was told to find a replacement.";
+        if (mode === "ssi") { S.pend.Bob = false; S.end = "ok";
+          return "Bob tries to commit. The database noticed that his count of 2 was read from data Alice has since changed and committed. His decision rested on an outdated premise, so the commit is <strong>aborted</strong> (a serialization failure). If the app retries, Bob's count is 1 and his request is refused."; }
+        S.on.Bob = false; S.pend.Bob = false; S.end = "bad";
+        return "Bob commits. Successfully. Neither transaction broke any rule the database knows about, yet together they did.";
+      }
+    ];
+    root.querySelector(".nx").addEventListener("click", function () { if (S.i >= STEPS.length) return; S.log.push(STEPS[S.i]()); S.i++; render(); });
+    root.querySelector(".rs").addEventListener("click", reset);
+    root.querySelectorAll(".seg button").forEach(function (b) { b.addEventListener("click", function () { mode = b.getAttribute("data-m"); reset(); }); });
+    function render() {
+      root.querySelectorAll(".seg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-m") === mode); });
+      var nx = root.querySelector(".nx"); nx.disabled = S.i >= STEPS.length;
+      nx.textContent = S.i >= STEPS.length ? "Done. Try another setting" : "Next step ▶ (" + (S.i + 1) + "/" + STEPS.length + ")";
+      root.querySelector(".rows").innerHTML = ["Alice", "Bob"].map(function (d) {
+        var note = [];
+        if (S.lock) note.push("locked by " + S.lock);
+        if (S.pend[d]) note.push('<span class="pill">uncommitted: false</span>');
+        if (d === "Bob" && S.bobWait) note.push('<span class="pill">Bob waiting</span>');
+        return "<tr><td>" + d + "</td><td>" + S.on[d] + "</td><td>" + (note.join(" ") || "–") + "</td></tr>";
+      }).join("");
+      var n = (S.on.Alice ? 1 : 0) + (S.on.Bob ? 1 : 0);
+      root.querySelector(".cnt").textContent = n + " on call";
+      var v = "";
+      if (S.end === "bad") v = '<span class="badge-bad">write skew</span><span>Nobody is on call<small>Each transaction checked the rule on its snapshot, then changed a different row. Snapshot isolation doesn\'t catch this; PostgreSQL\'s and MySQL\'s "repeatable read" don\'t either.</small></span>';
+      else if (S.end === "ok") v = '<span class="badge-ok">rule kept</span><span>One doctor still on call<small>' + (mode === "lock" ? "Pessimistic: Bob waited for Alice. Correct, but you had to know which rows to lock." : "Optimistic: nobody waited; the database aborted the transaction whose premise went stale. The app must retry it.") + "</small></span>";
+      root.querySelector(".verdict").innerHTML = v;
+      root.querySelector(".log").innerHTML = S.log.map(function (m, i) { return "<li><b>" + (i + 1) + "</b>" + m + "</li>"; }).join("");
+    }
+    reset();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll(".isolation-sim").forEach(isolationSim);
+    document.querySelectorAll(".writeskew-sim").forEach(writeSkewSim);
   });
 })();

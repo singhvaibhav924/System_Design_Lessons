@@ -17,7 +17,7 @@
 - Chart colours: --viz-1 blue, --viz-2 orange (validated with dataviz checker). Text never uses series colours.
 - `assets/avail-widgets.js`: .nines-calc, .composite-calc (series/parallel availability)
 - `assets/clock-widgets.js`: .lww-sim (last-write-wins + skew), .fencing-sim (lease/fencing step-through)
-- `assets/txn-widgets.js`: .isolation-sim (Alice/transfer under RU/RC/SI with MVCC version table)
+- `assets/txn-widgets.js`: .isolation-sim (Alice/transfer under RU/RC/SI with MVCC version table), .writeskew-sim (doctors on call under SI / FOR UPDATE / SSI)
 - `assets/storage-widgets.js`: .composite-index (column order vs entries read), .lsm-sim (WAL + memtable + SSTables, reads w/ Bloom filter, compaction, crash replay, write-amp counter), .btree-lookup (root→leaf path), .btree-calc (branching^levels capacity)
 - `assets/sim-session.js`: stateful vs stateless load-balancer simulator (reuse in Phase 8 LB lesson)
 - `reference/*.html`: cheat sheets (one per topic cluster)
@@ -29,7 +29,7 @@
 
 ## Phase 2 plan (tentative)
 Order: internals first (B-tree/LSM underpin all index talk), then roadmap 2.1 relational topics, then replication/sharding.
-0007 storage engines: log, hash index, SSTables/LSM, B-trees, WAL, LSM vs B-tree (done; DDIA Ch3 PDF 92–107, Xu pp.105–106) → 0008 indexes in practice: heap vs clustered, 3-step lookup, composite (leftmost, equality-then-range), covering/INCLUDE, planner + EXPLAIN, buffer pool (done; DDIA PDF 107–111 + Winand + Postgres docs) → 0009 transactions: ACID, multi-object, retries, read committed, snapshot isolation/MVCC, naming mess (done; DDIA PDF 243–264) → 0010 lost updates, write skew, phantoms, serializability: serial execution, 2PL, SSI (DDIA PDF 264–288) → data models/SQL vs NoSQL, normalization → replication → replication lag → leaderless/quorums → sharding → consistent hashing → 0018 wrap-up LECTURE walking through Xu Ch6 KV-store design (not a project/capstone for the user — they do practicals themselves)
+0007 storage engines: log, hash index, SSTables/LSM, B-trees, WAL, LSM vs B-tree (done; DDIA Ch3 PDF 92–107, Xu pp.105–106) → 0008 indexes in practice: heap vs clustered, 3-step lookup, composite (leftmost, equality-then-range), covering/INCLUDE, planner + EXPLAIN, buffer pool (done; DDIA PDF 107–111 + Winand + Postgres docs) → 0009 transactions: ACID, multi-object, retries, read committed, snapshot isolation/MVCC, naming mess (done; DDIA PDF 243–264) → 0010 lost updates, write skew, phantoms, serializability: serial execution, 2PL, SSI (done; DDIA PDF 264–288) → data models/SQL vs NoSQL, normalization → replication → replication lag → leaderless/quorums → sharding → consistent hashing → 0018 wrap-up LECTURE walking through Xu Ch6 KV-store design (not a project/capstone for the user — they do practicals themselves)
 
 ## External sources used so far (not in local books)
 - Markus Winand, Use The Index, Luke (slow indexes, concatenated keys, equality-then-range, function indexes) and PostgreSQL docs (EXPLAIN, planner stats, index-only scans, shared_buffers): lesson 0008

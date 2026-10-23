@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Write Skew and Serializability</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/txn-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0010</span>
+</nav>
+
+<p class="kicker">Phase 2.1 · Transactions (part 2)</p>
+<h1>Lost updates, write skew, and the three ways to get true serializability</h1>
+<p class="subtitle">Two users act at the same moment, each one's change looks valid, and together they break a rule. Snapshot isolation doesn't stop this. This lesson shows the bug and the three ways databases prevent it.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~22 min</span>
+  <span><b>Main source</b> DDIA Ch. 7, "Preventing Lost Updates" to the end of the chapter</span>
+  <span><b>Roadmap topics</b> lost updates · write skew · phantoms · serializability · 2PL · SSI</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Spot the two race conditions behind most "how did this happen?" data bugs: the <strong>lost update</strong> and <strong>write skew</strong>. Choose the right fix:
+  an atomic update, a row lock, a constraint, or serializable isolation. Explain how the three serializability methods differ, and what each costs.
+</div>
+
+<p><a href="0009-transactions-acid-and-snapshot-isolation.html">Lesson 0009</a> was about what a transaction can <em>see</em> while others write. This one is about
+two transactions <em>writing</em> at the same time.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>The lost update: read, change, write back</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Preventing Lost Updates" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=264">pp. 242–246</a>
+</aside>
+
+<p>Any <strong>read-modify-write cycle</strong> can lose an update: read a value, compute a new one in your code, write it back. If two clients do this at once, the
+second write doesn't include the first change. The later write "clobbers" the earlier one. Kleppmann's examples include incrementing a counter or balance, adding an
+item to a list inside a JSON document, and two people saving the same wiki page.</p>
+
+<p>The fixes, roughly from best to last resort:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Fix</th><th>How</th><th>Watch out</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Atomic update</strong></td><td><code>UPDATE counters SET value = value + 1 WHERE key = 'foo'</code>. The database does the read and write as one step.
+      "Usually the best choice" when the change can be written this way.</td><td>ORMs make it "easy to accidentally" write the unsafe version instead.</td></tr>
+    <tr><td><strong>Explicit lock</strong></td><td><code>SELECT … FOR UPDATE</code> locks the rows you read until you commit. Use it when the logic is too complex for one <code>UPDATE</code>
+      (Kleppmann's example: validating a move in a game).</td><td>"It's easy to forget to add a necessary lock somewhere."</td></tr>
+    <tr><td><strong>Automatic detection</strong></td><td>The database notices the lost update and aborts one transaction, which you retry. PostgreSQL's repeatable read does this,
+      as do Oracle's serializable and SQL Server's snapshot isolation.</td><td><strong>MySQL/InnoDB's repeatable read does not.</strong></td></tr>
+    <tr><td><strong>Compare-and-set</strong></td><td><code>UPDATE … SET content = 'new' WHERE id = 1 AND content = 'old'</code>. It writes only if nothing changed; if no row was
+      updated, retry.</td><td>Not safe if the database evaluates the <code>WHERE</code> against an old snapshot. "Check whether your database's compare-and-set operation is safe."</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>In Python ORMs the unsafe version looks innocent: <code>job.retries += 1; job.save()</code> is a read-modify-write in your process. Django's
+  <code>F("retries") + 1</code>, or a plain SQL <code>SET retries = retries + 1</code>, is the atomic version. The same applies to anything counted per request:
+  API quota used, tokens spent, examples labelled.</p>
+</div>
+
+<p>With replicas there's one more case. Locks and compare-and-set assume there's one up-to-date copy. Databases that accept writes on several replicas can't promise
+that, so they keep conflicting versions and merge them, or they fall back to
+<a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">last write wins</a>, which "is prone to lost updates". Lesson 0015 covers this.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Write skew: each change is fine, together they break the rule</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Write Skew and Phantoms", Fig. 7-8 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=268">pp. 246–249</a>
+</aside>
+
+<p>Kleppmann's example: a hospital rule says <em>at least one doctor must be on call</em>. Alice and Bob are both on call and both feel ill. They press "go off call" at the
+same moment. Each transaction checks "are at least 2 on call?", sees yes, and updates <em>its own</em> row. Both commit, and nobody is on call.</p>
+
+<p>This isn't a dirty write or a lost update, because the two transactions changed <strong>different rows</strong>. It's <strong>write skew</strong>: two transactions read
+the same data, then each updates a different part of it based on what it read. Run it under three database settings:</p>
+
+<div class="figure wide">
+  <div class="writeskew-sim"></div>
+  <div class="caption">DDIA's Fig. 7-8 (the bug), its <code>FOR UPDATE</code> fix (p. 248), and Fig. 7-11 (how serializable snapshot isolation catches it). Step through each setting.</div>
+</div>
+
+<p>Write skew is <strong>not</strong> detected by PostgreSQL's or MySQL's repeatable read, Oracle's serializable or SQL Server's snapshot isolation. Atomic operations don't
+help because several rows are involved, and most databases can't express "at least one row must match" as a constraint. Your options: lock the rows you read
+(<code>FOR UPDATE</code>) or use true serializable isolation.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Phantoms: when there's no row to lock</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "More examples of write skew" and "Phantoms causing write skew" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=271">pp. 249–251</a>
+</aside>
+
+<p>Once you know the pattern, you'll see it in many places. Kleppmann lists room booking (two people book the same slot), game moves (two pieces moved to the same square),
+claiming a username, and <strong>double-spending</strong> (two purchases each see enough balance). All of them follow the same three steps:</p>
+<ol>
+  <li>A <code>SELECT</code> checks a condition ("no booking overlaps noon–1pm").</li>
+  <li>The application decides based on the result.</li>
+  <li>It writes, and the write <em>changes the answer</em> that step 1 would now give.</li>
+</ol>
+
+<p>In the doctors case, you can lock the rows from step 1. But room booking checks that <strong>no</strong> rows exist, and you can't lock a row that isn't there. A write that
+changes another transaction's search result is called a <strong>phantom</strong>. Fixes:</p>
+<ul>
+  <li><strong>A unique constraint</strong>, where the rule fits one (usernames). The second insert fails.</li>
+  <li><strong>Materializing conflicts</strong>: create a table of rows that exist only to be locked, such as one row per room per 15-minute slot. It works, but it's "a last resort":
+  error-prone, and concurrency control leaks into your data model.</li>
+  <li><strong>Serializable isolation</strong>, which is "much preferable in most cases".</li>
+</ul>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>"Check the team's remaining GPU-hour or LLM-token budget, then start the job" is double-spending: two jobs launched at once both see enough budget. "Check the GPU node is
+  free, then reserve it" is room booking. Both are phantom-style write skew. Use serializable isolation, a materialized "slot" row you lock, or an atomic
+  <code>UPDATE budget SET remaining = remaining - ? WHERE remaining &gt;= ?</code> that changes exactly one row.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Serializability, and the three ways to get it</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Serializability" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=273">pp. 251–252</a>
+</aside>
+
+<p>Kleppmann's complaint is that weak isolation levels are hard to understand and inconsistently implemented, you can't tell from your code whether it's safe, and concurrency
+bugs rarely show up in tests. Since the 1970s, researchers have given the same answer: "use serializable isolation!" It guarantees the result is the same as if the
+transactions ran one at a time, so code that's correct alone stays correct under concurrency. Why isn't it the default? Look at how it's built:</p>
+
+<h3>Method 1: actually run one at a time</h3>
+<aside class="side">
+  <span class="src">DDIA, "Actual Serial Execution" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=274">pp. 252–256</a>
+</aside>
+<p>Use a single thread with no concurrency at all, and isolation is serializable by definition. Designers came round to this around 2007, once RAM got cheap enough to hold the
+working data and OLTP transactions turned out to be short. It's used by VoltDB, Datomic and <strong>Redis</strong>. The catch: you can't have back-and-forth with the client
+inside a transaction (the thread would sit idle waiting), so the whole transaction is sent at once as a
+<span class="term" data-tip="Code that runs inside the database itself, submitted as one unit. In Redis these are Lua scripts.">stored procedure</span> (Lua scripts in Redis).
+Limits: every transaction must be small and fast, because "it takes only one slow transaction to stall all transaction processing". Data should fit in memory. Throughput
+is one CPU core, unless you split the data into partitions, and cross-partition transactions are "vastly slower" (VoltDB: about 1,000 per second).</p>
+
+<h3>Method 2: two-phase locking (2PL)</h3>
+<aside class="side">
+  <span class="src">DDIA, "Two-Phase Locking (2PL)" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=279">pp. 257–261</a>
+</aside>
+<p>This was the only widely used method for about 30 years. Readers take <strong>shared</strong> locks and writers take <strong>exclusive</strong> locks, and all of them are held until
+commit. Phase 1 acquires locks, phase 2 releases them all at the end. Unlike snapshot isolation, <strong>writers block readers and readers block writers</strong>. To stop phantoms,
+it also locks <em>search conditions</em>. In practice that's an approximation on an index (an
+<span class="term" data-tip="Instead of locking 'bookings for room 123 between 12 and 1', lock a slightly bigger range found in an index, such as all bookings for room 123. Safe, because it covers everything the precise lock would.">index-range lock</span>),
+or the whole table if no index fits. Used by MySQL/InnoDB's and SQL Server's serializable level.
+The cost: lower throughput, frequent <strong>deadlocks</strong> (the database aborts one transaction and you retry), and "quite unstable latencies… very slow at high percentiles".
+One long transaction can bring everything to a halt. Not to be confused with 2PC (two-phase commit), which is a different thing covered in Phase 5.</p>
+
+<h3>Method 3: serializable snapshot isolation (SSI)</h3>
+<aside class="side">
+  <span class="src">DDIA, "Serializable Snapshot Isolation (SSI)", Figs. 7-10, 7-11 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=283">pp. 261–266</a>
+</aside>
+<p>This is snapshot isolation plus detection. Transactions run without blocking and read from their snapshot. The database tracks what each one read, and at commit it checks whether
+the transaction "acted on an outdated premise": did something it read change and get committed in the meantime? If so, the commit is aborted and you retry. That's what the
+simulator did to Bob. 2PL is <strong>pessimistic</strong> (wait in case of trouble); SSI is <strong>optimistic</strong> (proceed, check at the end). It's
+<strong>PostgreSQL's <code>SERIALIZABLE</code> level</strong> (since 9.1), and FoundationDB uses a similar method. Readers still never block writers, so latency is predictable.
+The cost is aborts: high contention or long read-write transactions mean many retries.</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th></th><th>Serial execution</th><th>Two-phase locking</th><th>Serializable snapshot isolation</th></tr></thead>
+  <tbody>
+    <tr><td>Approach</td><td>Remove concurrency</td><td>Pessimistic: block</td><td>Optimistic: abort at commit</td></tr>
+    <tr><td>Readers vs writers</td><td>n/a (one at a time)</td><td>Block each other</td><td>Don't block</td></tr>
+    <tr><td>Main cost</td><td>One core; one slow transaction stalls all</td><td>Throughput, deadlocks, bad p99</td><td>Retries under contention</td></tr>
+    <tr><td>Where</td><td>Redis, VoltDB, Datomic</td><td>MySQL &amp; SQL Server serializable</td><td>PostgreSQL serializable, FoundationDB</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout trap">
+  <span class="label">Interview red flag</span>
+  <p>"Wrap it in a transaction" is not an answer to a booking or balance race. The strong answer names the race (lost update or write skew), then picks a fix: an atomic
+  conditional update, a unique constraint, <code>SELECT … FOR UPDATE</code>, or serializable isolation with retries. And it says that every one of these, plus the
+  deadlocks and serialization failures, needs a <strong>retry loop</strong> in the application.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>The page in five lines</h2>
+
+<ol>
+  <li><strong>Lost update</strong>: two read-modify-write cycles on the same row, so one change vanishes. Fix with atomic <code>UPDATE x = x + 1</code>, <code>FOR UPDATE</code>, automatic detection (not MySQL's repeatable read), or compare-and-set.</li>
+  <li><strong>Write skew</strong>: two transactions read the same rule, each updates a <em>different</em> row, and together they break it. Snapshot isolation doesn't catch it.</li>
+  <li><strong>Phantom</strong>: the check is "no such row exists", so there's nothing to lock. Use a unique constraint, materialized lock rows, or serializable isolation.</li>
+  <li>Serializability methods: <strong>serial execution</strong> (Redis; small, fast transactions), <strong>2PL</strong> (blocking, deadlocks, bad p99), <strong>SSI</strong> (optimistic, aborts on stale premises; PostgreSQL).</li>
+  <li>Every fix needs the application to <strong>retry</strong> aborted transactions.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">Code does <code>row = get(); row.count += 1; save(row)</code> from many workers. What's the simplest safe fix?</p>
+      <div class="opts">
+        <button>raise the isolation level to read committed</button>
+        <button>use one atomic UPDATE incrementing the count</button>
+        <button>add a secondary index on the count</button>
+        <button>retry the save whenever it is slow</button>
+      </div>
+      <p class="why">An atomic update lets the database do the read and write as one step, so no increment is lost.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">Two doctors each check "2 on call", each update their own row, and both commit. What is this?</p>
+      <div class="opts">
+        <button>a dirty read of uncommitted row data</button>
+        <button>a dirty write over uncommitted row data</button>
+        <button>a lost update on one shared row</button>
+        <button>write skew across two different table rows</button>
+      </div>
+      <p class="why">They read the same data and wrote different rows. Snapshot isolation allows this; only serializability or explicit locks stop it.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Why can't <code>SELECT … FOR UPDATE</code> fix a double room booking on its own?</p>
+      <div class="opts">
+        <button>the check finds no rows to lock</button>
+        <button>locks are released before the insert runs</button>
+        <button>bookings use timestamps, which locks never cover</button>
+        <button>FOR UPDATE only works on primary keys</button>
+      </div>
+      <p class="why">It's a phantom: the conflicting row doesn't exist yet. Materialize lock rows or use serializable isolation.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Which serializability method lets readers and writers proceed without blocking each other?</p>
+      <div class="opts">
+        <button>two-phase locking using shared and exclusive locks</button>
+        <button>actual serial execution on one single thread</button>
+        <button>serializable snapshot isolation with checks at commit</button>
+        <button>read committed with row-level write locks held</button>
+      </div>
+      <p class="why">SSI reads from a snapshot without locks and aborts only transactions whose premise went stale. (Read committed isn't serializable.)</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A service on PostgreSQL <code>SERIALIZABLE</code> sees occasional serialization failures. What should the code do?</p>
+      <div class="opts">
+        <button>switch to read uncommitted to avoid them</button>
+        <button>retry the whole transaction from the start</button>
+        <button>ignore the error, since the write happened</button>
+        <button>add more indexes until the errors stop</button>
+      </div>
+      <p class="why">SSI is optimistic: aborts are part of the design. The transaction did not commit and must be re-run.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 7, "Preventing Lost Updates" to the chapter summary</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=264">pp. 242–268</a>).
+      The write-skew examples (pp. 246–251) are worth reading in full; they will change how you read "check, then write" code.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/transactions.html">Transactions &amp; isolation cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0009-transactions-acid-and-snapshot-isolation.html">← 0009 · Transactions, ACID &amp; snapshot isolation</a>
+  <span class="disabled">Next: 0011 · Data models (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
