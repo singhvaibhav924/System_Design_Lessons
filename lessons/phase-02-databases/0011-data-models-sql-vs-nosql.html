@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Models: SQL vs NoSQL</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/model-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0011</span>
+</nav>
+
+<p class="kicker">Phase 2.1 · Data models</p>
+<h1>Tables, documents or graphs: picking a data model by its relationships</h1>
+<p class="subtitle">"SQL or NoSQL?" is the wrong question. The useful question is how the pieces of your data relate to each other, because each data model makes some relationships easy and others painful.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main sources</b> DDIA Ch. 2 · Chip Huyen, <em>DMLS</em> Ch. 3 "Data Models" · Alex Xu Ch. 1</span>
+  <span><b>Roadmap topics</b> schema design · normalization · denormalization · primary &amp; foreign keys · SQL vs NoSQL</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Look at a dataset and say whether it's mostly a <strong>tree</strong> (documents fit), a <strong>web of references</strong> (relational fits) or <strong>relationships
+  first</strong> (a graph fits). Explain what normalizing and denormalizing each cost, and answer "SQL or NoSQL?" with reasons instead of fashion.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>A data model decides which questions are easy</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 2 introduction —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=49">pp. 27–28</a>;
+  DMLS, "Data Models" —
+  <a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=78">pp. 58–59</a>
+</aside>
+
+<p>Kleppmann calls data models "perhaps the most important part of developing software", because they shape "how we think about the problem". Chip Huyen's
+example: describe a car by make, model, year and price, and it's easy for buyers. Describe the same car by owner, licence plate and address history, and it's easy for
+the police. Same car, different questions made easy.</p>
+
+<p>Every model "embodies assumptions about how it is going to be used". So the real question is always: <em>what are the relationships in my data, and which queries
+will I run most?</em> We'll take the three main models in turn.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Relational: store each fact once, join when reading</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Many-to-One and Many-to-Many Relationships" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=55">pp. 33–34</a>;
+  DMLS Tables 3-2 to 3-4 —
+  <a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=79">pp. 59–61</a>
+</aside>
+
+<p>The relational model (Codd, 1970) puts data in tables of rows. Its key habit is <strong>normalization</strong>: each human-meaningful fact is stored <em>once</em>, and
+everything else refers to it by ID. In Huyen's example, "Banana Press, UK" is repeated on three book rows. Move it to a <code>publisher</code> table and give each book a
+<code>publisher_id</code> (a <span class="term" data-tip="A column holding another table's primary key, e.g. book.publisher_id → publisher.id. The database can enforce that it points to a real row.">foreign key</span>).
+Kleppmann's rule of thumb for spotting a non-normalized schema: "if you're duplicating values that could be stored in just one place". You don't need the formal normal forms
+(1NF, 2NF…); he calls their distinctions "of little practical interest".</p>
+
+<p>Why bother? An ID "never needs to change", but anything meaningful to humans does: names get rebranded, cities renamed, labels translated. Duplicated copies all have to
+be updated, which means more writes and the risk that some copies are missed. The price, in Huyen's words: data is "spread across multiple relations", and joining it back
+"can be expensive for large tables". <strong>Denormalization</strong> is the deliberate reverse: copy data in to make reads cheaper, and accept the job of keeping the copies in
+sync (the unread-counter example in <a href="0009-transactions-acid-and-snapshot-isolation.html">lesson 0009</a>).</p>
+
+<p>Run the same four operations on one dataset stored three ways:</p>
+
+<div class="figure wide">
+  <div class="model-compare"></div>
+  <div class="caption">Book data adapted from DMLS Tables 3-2 to 3-4 and Examples 3-1 to 3-3. Highlighted rows and documents are the ones the operation has to read or rewrite.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Documents: great for trees, awkward for references</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "The Object-Relational Mismatch" and "Relational Versus Document Databases Today" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=51">pp. 29–32, 38–41</a>
+</aside>
+
+<p>Kleppmann's example is a LinkedIn profile: one user with many jobs, many schools and several contact links. That's a <strong>tree of one-to-many relationships</strong>,
+usually loaded all at once. Relationally it's spread over four tables and needs "a messy multi-way join". As one JSON document (MongoDB, CouchDB) it's one read. That's the
+<strong>locality</strong> advantage, plus less translation between your code's objects and the database.</p>
+
+<p>The trouble starts with references. Is "Microsoft" just a string in the profile, or a company entity with its own page and logo? Do users write recommendations for other
+users, showing the recommender's current photo? Those are <strong>many-to-one and many-to-many</strong> relationships, and "data has a tendency of becoming more interconnected as
+features are added". Document databases have weak join support, so you either denormalize (and keep copies in sync yourself) or join in application code with several queries,
+which is "usually slower". Kleppmann's summary: for highly interconnected data "the document model is awkward, the relational model is acceptable, and graph models… are
+the most natural."</p>
+
+<p>Two more practical limits: the database usually loads and <strong>rewrites the whole document</strong> even if you change one field, so keep documents small. And you can't
+easily point to "the second job in user 251's list".</p>
+
+<h3>"Schemaless" is really schema-on-read</h3>
+<aside class="side">
+  <span class="src">DDIA, "Schema flexibility in the document model" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=61">pp. 39–41</a>
+</aside>
+<p>The code reading the data always assumes some structure, so "there is an implicit schema, but it is not enforced by the database". Kleppmann compares it to programming
+languages: <strong>schema-on-write</strong> (relational: the database checks every row) is like static typing; <strong>schema-on-read</strong> (documents: readers cope) is like dynamic
+typing. Schema-on-read helps when records really differ, or when an outside system controls the structure. When every record should look the same, a schema documents and
+enforces it. Changing a schema means either a migration (<code>ALTER TABLE</code> is usually fast, but backfilling every row with <code>UPDATE</code> is slow anywhere) or
+handling old and new shapes in the code that reads them.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Huyen tells of a schema change that replaced missing ages with <code>0</code>, after which "their ML model thought the transactions were made by people 0 years old"
+  (<a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=86">DMLS p. 66</a>). Schema changes are a classic way for silent garbage to reach a model. Whoever owns
+  the schema (database or reader) must also decide what "missing" looks like.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Graphs: when the relationships are the data</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Graph-Like Data Models" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=71">pp. 49–51</a>;
+  DMLS, "Graph model" —
+  <a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=85">pp. 65–66</a>
+</aside>
+
+<p>When many-to-many relationships dominate, model the data as <strong>vertices</strong> (things) and <strong>edges</strong> (relationships): social networks, the web's link graph,
+road networks. Facebook stores people, places, events and comments as one graph of different vertex and edge types. Huyen's example query is "everyone born in the USA", where a
+person may be linked to a city, which is in a state, which is in the country. The number of hops varies, so there's "no easy way" to write it in SQL, but in a graph it's a
+traversal. Graph databases include Neo4j (query language Cypher). You won't need graph query languages for interviews; knowing when a graph fits is enough.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>This debate is fifty years old, and the models are converging</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Are Document Databases Repeating History?" and "Convergence" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=58">pp. 36–42</a>
+</aside>
+
+<p>IBM's IMS (1968, built for Apollo stock-keeping) stored data as nested trees, much like JSON documents, and had the same problem with many-to-many relationships. The relational
+model won partly because of the <strong>query optimizer</strong> (<a href="0008-indexes-in-practice.html">lesson 0008</a>). You describe <em>what</em> you want, the database picks the
+access path, and adding an index doesn't require rewriting queries. "You only need to build a query optimizer once."</p>
+
+<p>Today the camps are merging. PostgreSQL and MySQL store and index JSON, and document databases have added join-like features. Kleppmann calls a hybrid "a good route", and Huyen
+notes it's "common to use both models for different tasks in the same database". Using several kinds of store in one system, each for what it's good at, is called
+<strong>polyglot persistence</strong>.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>"SQL or NoSQL?" in an interview</h2>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 1, "Which databases to use?" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=8">p. 8</a>;
+  DDIA, "The Birth of NoSQL" —
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=51">p. 29</a>
+</aside>
+
+<p>"NoSQL" doesn't name a technology. It started as "a catchy Twitter hashtag for a meetup" in 2009 and was later reinterpreted as "Not Only SQL". Xu splits it into four
+families, which are really different data models:</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Family</th><th>Shape</th><th>Examples</th><th>Fits</th></tr></thead>
+  <tbody>
+    <tr><td>Key-value</td><td>Key → opaque value</td><td>Redis, DynamoDB</td><td>Lookups by ID: sessions, caches, online feature lookups</td></tr>
+    <tr><td>Document</td><td>Key → nested JSON</td><td>MongoDB, CouchDB</td><td>Self-contained trees loaded whole: profiles, configs, catalogue items</td></tr>
+    <tr><td>Wide-column</td><td>Rows of many columns, grouped by partition key, LSM storage (<a href="0007-storage-engines-lsm-and-btrees.html">0007</a>)</td><td>Cassandra, HBase</td><td>Huge write volumes read by key and time: events, logs, time series</td></tr>
+    <tr><td>Graph</td><td>Vertices + edges</td><td>Neo4j</td><td>Relationship-heavy queries: social, fraud rings, knowledge graphs</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Xu's default: "for most developers, relational databases are the best option", and look further when you need super-low latency, have unstructured or non-relational data, only
+store and fetch serialized blobs, or have "a massive amount of data". The strong interview answer adds reasons:</p>
+<ul>
+  <li><strong>Relationships:</strong> a tree favours documents, references favour relational, relationship-heavy data favours a graph.</li>
+  <li><strong>Access pattern:</strong> mostly lookups by key, or ad-hoc queries and joins?</li>
+  <li><strong>Correctness:</strong> do you need multi-row transactions (lessons 0009–0010)? Many NoSQL stores don't offer them.</li>
+  <li><strong>Scale:</strong> does the write volume or data size really outgrow one well-indexed relational node plus replicas?
+  <span class="badge later">Phase 2 · replication &amp; sharding next</span></li>
+</ul>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A typical ML platform is already polyglot. Experiments, runs and the model registry sit in <strong>PostgreSQL</strong>: many references, transactions needed. Run configs and
+  hyperparameters are a natural <strong>JSON column</strong> inside it, since their shape varies by model. Prediction and event logs go to a <strong>wide-column or log store</strong>:
+  huge append volume, read by key and time. Online features go to a <strong>key-value</strong> store, and embeddings to a <strong>vector index</strong>
+  <span class="badge later">Phase 13</span>.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The page in five lines</h2>
+
+<ol>
+  <li>Choose a data model by its <strong>relationships</strong> and your most common queries, not by fashion.</li>
+  <li><strong>Normalize</strong>: each fact once, referenced by ID. Cheap, safe updates; reads need joins. <strong>Denormalize</strong>: copies for fast reads; you keep them in sync.</li>
+  <li><strong>Documents</strong> suit self-contained trees (locality, one read). Many-to-many forces app-side joins or duplication. Whole-document rewrites, so keep them small.</li>
+  <li>"Schemaless" = <strong>schema-on-read</strong>: the schema still exists, in every reader. Relational = schema-on-write.</li>
+  <li>"NoSQL" = key-value, document, wide-column and graph. Default to relational, and name the concrete reason when you don't.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">Why store a <code>region_id</code> instead of the text "Greater Seattle Area" in every profile?</p>
+      <div class="opts">
+        <button>IDs are always faster to index than text</button>
+        <button>the name is stored once and easily renamed</button>
+        <button>document databases cannot ever store long text strings</button>
+        <button>foreign keys make every query avoid any joins</button>
+      </div>
+      <p class="why">Normalization: the human-meaningful value is stored once, so a rename is one update instead of many.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Which data fits a document model best?</p>
+      <div class="opts">
+        <button>a social network where users follow many users</button>
+        <button>bank accounts that need money transfers between them</button>
+        <button>a résumé with jobs and schools, loaded whole</button>
+        <button>products, orders and customers all referencing each other</button>
+      </div>
+      <p class="why">A self-contained tree of one-to-many relationships, read all at once, is the document model's sweet spot.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">What does "schemaless" really mean for a document database?</p>
+      <div class="opts">
+        <button>readers enforce the schema, not the database itself</button>
+        <button>documents can be queried without any structure whatsoever</button>
+        <button>the database infers and enforces a schema automatically</button>
+        <button>schema changes require a migration of every document</button>
+      </div>
+      <p class="why">Schema-on-read: the structure is implicit, and every piece of code that reads the data must handle every shape it might find.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">You denormalize a publisher's name into every book row. What new job do you take on?</p>
+      <div class="opts">
+        <button>writing joins between the book and publisher tables</button>
+        <button>running ALTER TABLE before every single new insert</button>
+        <button>rebuilding the B-tree index after every single read</button>
+        <button>updating every single copy whenever the publisher changes</button>
+      </div>
+      <p class="why">Denormalized copies make reads cheap, but you must keep them in sync, ideally in one transaction.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">An interviewer asks "SQL or NoSQL?" for user accounts with payments. What's the strongest start?</p>
+      <div class="opts">
+        <button>NoSQL, because it always scales better than SQL</button>
+        <button>relational, since payments need references and multi-row transactions</button>
+        <button>a graph database, since users have many relationships</button>
+        <button>key-value, since every user has a unique ID</button>
+      </div>
+      <p class="why">Payments need transactions and accounts reference many things. Relational by default, with the reason stated.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 2, "Relational Model Versus Document Model"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=50">pp. 28–42</a>), then the first pages of "Graph-Like Data Models" (pp. 49–51).
+      You can skip the query-language sections (MapReduce, Cypher, SPARQL, Datalog). They aren't needed for interviews.</li>
+    <li>Then: <strong>Huyen, <em>DMLS</em>, Ch. 3, "Data Models" and "Structured Versus Unstructured Data"</strong>
+      (<a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=78">pp. 58–67</a>), the same ideas from an ML engineer's angle.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/data-models.html">Data models cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0010-lost-updates-write-skew-serializability.html">← 0010 · Lost updates, write skew &amp; serializability</a>
+  <span class="disabled">Next: 0012 · Encoding &amp; schema evolution (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
