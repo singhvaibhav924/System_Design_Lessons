@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encoding and Evolution</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 2 (encoding)</p>
+<h1>Encoding &amp; schema evolution</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0012-encoding-and-schema-evolution.html">Lesson 0012</a>. Sources: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=133">DDIA Ch. 4</a>, DMLS Ch. 3.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Compatibility</h3><p><b>Backward</b>: new code reads old data (easy). <b>Forward</b>: old code reads new data (must ignore unknowns). Rolling deploys + stored data need both.</p><p class="from">DDIA p. 112</p></div>
+  <div class="card"><h3>Language formats</h3><p>pickle, Java Serializable, Marshal: one language, poor versioning, slow, and decoding untrusted bytes can run code. Only for transient use. Untrusted .pkl/.pt = executable.</p><p class="from">DDIA pp. 113–114</p></div>
+  <div class="card"><h3>JSON / CSV pitfalls</h3><p>No int vs float (IDs > 2⁵³ break in JS), no bytes (Base64 +33%), optional schemas, CSV escaping & float rounding. Fine for cross-org interchange.</p><p class="from">DDIA pp. 114–115 · DMLS p. 57</p></div>
+  <div class="card"><h3>Sizes (same record)</h3><p>JSON 81 B · MessagePack 66 · Thrift Binary 59 · Thrift Compact 34 · Protobuf 33 · Avro 32. Dropping field names is what saves space.</p><p class="from">DDIA pp. 116–122</p></div>
+  <div class="card"><h3>Protobuf / Thrift rules</h3><p>Tag = identity. Rename ok. Add only optional/default with a new tag. Remove only optional; never reuse its tag. Never change a tag. int32→int64 truncates in old code. proto3: no required.</p><p class="from">DDIA pp. 120–121</p></div>
+  <div class="card"><h3>Avro</h3><p>No tags or types in bytes. Writer's vs reader's schema resolved by field name. Add/remove only fields with defaults. Null only via union. Renames via aliases (backward only).</p><p class="from">DDIA pp. 122–125</p></div>
+  <div class="card"><h3>Where's the writer's schema?</h3><p>File header (object container) · per-record version number + schema store (registry) · negotiated per connection. Registry also checks compatibility before deploy.</p><p class="from">DDIA pp. 125–126</p></div>
+  <div class="card"><h3>Data outlives code</h3><p>DB holds 5-year-old encodings next to new ones. Old code decoding into objects and re-saving can drop new fields (Fig. 4-7).</p><p class="from">DDIA pp. 129–130</p></div>
+  <div class="card"><h3>Row vs column formats</h3><p>Row (CSV, Avro): write/read whole records. Column (Parquet): read a few features of many; 14 MB CSV → 6 MB Parquet. pandas is column-major.</p><p class="from">DMLS pp. 54–57</p></div>
+</div>
+</main>
+</body>
+</html>

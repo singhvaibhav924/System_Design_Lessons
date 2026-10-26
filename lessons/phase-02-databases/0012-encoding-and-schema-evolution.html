@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encoding and Schema Evolution</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<style>
+  .bars { font-family: var(--sans); font-size: 13.5px; }
+  .bars .b { display: grid; grid-template-columns: 190px 1fr 64px; gap: 10px; align-items: center; margin: 6px 0; }
+  .bars .lab { color: var(--ink-2); }
+  .bars .track { height: 14px; }
+  .bars .fill { height: 14px; background: var(--viz-1); border-radius: 0 4px 4px 0; }
+  .bars .fill.text { background: var(--viz-2); }
+  .bars .val { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+  .bars .legend { display: flex; gap: 18px; color: var(--ink-3); font-size: 12.5px; margin-bottom: 8px; }
+  .bars .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; }
+  .ok { color: var(--green); font-weight: 600; }
+  .no { color: var(--red); font-weight: 600; }
+  @media (max-width: 600px) { .bars .b { grid-template-columns: 120px 1fr 52px; } }
+</style>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0012</span>
+</nav>
+
+<p class="kicker">Phase 2 · Encoding &amp; evolution</p>
+<h1>Encoding and schema evolution: changing a data format without breaking anyone</h1>
+<p class="subtitle">During a deploy, old and new code run side by side, and old data stays around for years. This lesson covers the rules that let JSON, Protobuf and Avro data survive those changes, and the bugs you get when they're broken.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~18 min</span>
+  <span><b>Main sources</b> DDIA Ch. 4 "Encoding and Evolution" · Chip Huyen, <em>DMLS</em> Ch. 3 "Data Formats"</span>
+  <span><b>Roadmap topics</b> serialization · backward / forward compatibility · Protobuf · Avro · schema registry</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Say whether a schema change is safe (adding, removing or renaming a field, or changing its type) in both directions: <strong>new code reading old data</strong> and
+  <strong>old code reading new data</strong>. Explain why Protobuf uses field numbers, how Avro avoids them, and why a <code>pickle</code> file from outside is a security risk.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Old and new code run at the same time</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 4 introduction —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=133">pp. 111–112</a>
+</aside>
+
+<p>You can't upgrade every machine at once. A <strong>rolling upgrade</strong> replaces servers a few at a time, and mobile users update whenever they like. So "old and new versions
+of the code, and old and new data formats, may potentially all coexist in the system at the same time." Two kinds of compatibility keep that working:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Who reads</th><th>Whose data</th><th>Difficulty</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Backward</strong> compatibility</td><td>New code</td><td>Written by old code</td><td>Usually easy: you know the old format and can handle it</td></tr>
+    <tr><td><strong>Forward</strong> compatibility</td><td>Old code</td><td>Written by new code</td><td>Trickier: old code must <em>ignore</em> things it has never heard of</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Encoding</strong> (also called serialization or marshalling) turns in-memory objects into bytes for a file or the network; <strong>decoding</strong> turns them back. Kleppmann
+avoids the word "serialization" here because it means something unrelated in transactions (<a href="0010-lost-updates-write-skew-serializability.html">lesson 0010</a>).</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Language-specific formats: pickle and friends</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Language-Specific Formats" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=135">pp. 113–114</a>
+</aside>
+
+<p>Python's <code>pickle</code>, Java's <code>Serializable</code> and Ruby's <code>Marshal</code> are convenient, but Kleppmann lists "deep problems". They tie you to one language.
+Versioning and efficiency are afterthoughts. And decoding can create arbitrary objects, so "if an attacker can get your application to decode an arbitrary byte sequence", they can
+often run code on your machine. His verdict: "generally a bad idea… for anything other than very transient purposes."</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Huyen's format table lists pickle for "Python, PyTorch serialization" (<a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=73">DMLS p. 53</a>). Model checkpoints are
+  often pickles, which is why loading a model file from an untrusted source is a real code-execution risk. It's also why weight-only formats such as <em>safetensors</em> exist. Treat a
+  downloaded <code>.pkl</code> or <code>.pt</code> like a downloaded executable.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>JSON and CSV: universal, slightly broken</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "JSON, XML, and Binary Variants" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=136">pp. 114–116</a>;
+  DMLS, "Text Versus Binary Format" —
+  <a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=77">p. 57</a>
+</aside>
+
+<p>Text formats are readable and supported everywhere, and they have subtle problems:</p>
+<ul>
+  <li><strong>Numbers are vague.</strong> JSON doesn't distinguish integers from floats. Integers above 2<sup>53</sup> lose precision in JavaScript, which is why Twitter's API
+  sends each 64-bit tweet ID twice, once as a number and once as a string. CSV can round floats too: Huyen's example is <code>0.12345678901232323</code> becoming
+  <code>0.12345678901</code>.</li>
+  <li><strong>No raw bytes.</strong> Binary data must be Base64-encoded, which is "hacky" and 33% bigger.</li>
+  <li><strong>Schemas are optional</strong> and often skipped, so every reader hard-codes its own interpretation. CSV is "quite vague": what if a value contains a comma?</li>
+</ul>
+<p>Still, for exchanging data <em>between organizations</em>, "the difficulty of getting different organizations to agree on anything outweighs most other concerns", so JSON wins
+there. Inside your own systems, at terabyte scale, a binary format is worth it.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Protobuf and Thrift: field numbers instead of names</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Thrift and Protocol Buffers", Figs. 4-1 to 4-4 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=138">pp. 116–121</a>
+</aside>
+
+<p>Protocol Buffers (from Google) and Thrift (from Facebook) require a <strong>schema</strong>, and code is generated from it:</p>
+<pre><code>message Person {
+    required string user_name       = 1;
+    optional int64  favorite_number = 2;
+    repeated string interests       = 3;
+}</code></pre>
+
+<p>The encoded bytes contain <strong>no field names</strong>, only the <strong>field tag</strong> (1, 2, 3), a type, and the value. Integers use a variable number of bytes, so 1337 takes
+2 bytes instead of 8. Kleppmann encodes the same record in every format:</p>
+
+<div class="figure">
+  <div class="bars">
+    <div class="legend"><span><i style="background:var(--viz-2)"></i>field names in every record</span><span><i style="background:var(--viz-1)"></i>schema-based, no field names</span></div>
+    <div class="b"><span class="lab">JSON (no whitespace)</span><span class="track"><span class="fill text" style="display:block;width:100%"></span></span><span class="val">81 bytes</span></div>
+    <div class="b"><span class="lab">MessagePack (binary JSON)</span><span class="track"><span class="fill text" style="display:block;width:81.5%"></span></span><span class="val">66 bytes</span></div>
+    <div class="b"><span class="lab">Thrift BinaryProtocol</span><span class="track"><span class="fill" style="display:block;width:72.8%"></span></span><span class="val">59 bytes</span></div>
+    <div class="b"><span class="lab">Thrift CompactProtocol</span><span class="track"><span class="fill" style="display:block;width:42%"></span></span><span class="val">34 bytes</span></div>
+    <div class="b"><span class="lab">Protocol Buffers</span><span class="track"><span class="fill" style="display:block;width:40.7%"></span></span><span class="val">33 bytes</span></div>
+    <div class="b"><span class="lab">Avro</span><span class="track"><span class="fill" style="display:block;width:39.5%"></span></span><span class="val">32 bytes</span></div>
+  </div>
+  <div class="caption">The record <code>{"userName": "Martin", "favoriteNumber": 1337, "interests": ["daydreaming", "hacking"]}</code>, sizes from DDIA pp. 116–122. "Binary JSON" saves little
+  because it still spells out every field name; leaving the names out roughly halves the size.</div>
+</div>
+
+<h3>The evolution rules follow from the field tags</h3>
+<aside class="side">
+  <span class="src">DDIA, "Field tags and schema evolution" and "Datatypes and schema evolution" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=142">pp. 120–121</a>
+</aside>
+<p>The tag <em>is</em> the field's identity in the data, so:</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Change</th><th>New code reads old data<br><small>(backward)</small></th><th>Old code reads new data<br><small>(forward)</small></th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Add a field with a <strong>new tag</strong>, optional or with a default</td><td class="ok">✓</td><td class="ok">✓</td><td>Missing field → default. Unknown tag → old code skips it (the type says how many bytes to skip)</td></tr>
+    <tr><td>Add a <strong>required</strong> field</td><td class="no">✗</td><td class="ok">✓</td><td>Old data doesn't have it, so the required check fails</td></tr>
+    <tr><td><strong>Rename</strong> a field (same tag)</td><td class="ok">✓</td><td class="ok">✓</td><td>Names never appear in the encoded data</td></tr>
+    <tr><td>Remove an <strong>optional</strong> field</td><td class="ok">✓</td><td class="ok">✓</td><td>But <strong>never reuse its tag</strong>; old data with that tag still exists</td></tr>
+    <tr><td>Remove a <strong>required</strong> field</td><td class="ok">✓</td><td class="no">✗</td><td>Old code still demands it</td></tr>
+    <tr><td><strong>Change a tag</strong>, or reuse an old one</td><td class="no">✗</td><td class="no">✗</td><td>All existing data now means something else</td></tr>
+    <tr><td>int32 → int64</td><td class="ok">✓</td><td class="no">risky</td><td>Old code holds the value in 32 bits, so large values get truncated</td></tr>
+    <tr><td>optional → <code>repeated</code> (Protobuf)</td><td class="ok">✓</td><td class="ok">✓</td><td>New code sees a 0- or 1-item list; old code sees the last item</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Because "required" fields make evolution so fragile, newer Protobuf (proto3) dropped the <code>required</code> keyword entirely, so every field is optional with a default.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Avro: no tags, two schemas</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Avro", Figs. 4-5, 4-6 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=144">pp. 122–127</a>
+</aside>
+
+<p>Avro (from the Hadoop world) goes further. The bytes are just values one after another, with no tags and no types, which makes it the smallest at 32 bytes. You can only decode
+them if you know the schema they were written with. The trick is that <strong>the writer's schema and the reader's schema "don't have to be the same, they only need to be compatible"</strong>.
+At read time the Avro library puts the two side by side and matches fields <strong>by name</strong>. Fields only the writer has are ignored. Fields only the reader has get the
+reader's default.</p>
+
+<ul>
+  <li><strong>Rule:</strong> "you may only add or remove a field that has a default value." Null is allowed only if you say so explicitly (<code>union { null, long }</code>).</li>
+  <li><strong>Renames</strong> use aliases in the reader's schema: backward compatible, not forward.</li>
+  <li><strong>Where does the reader find the writer's schema?</strong> In a big file, it's written once in the header. For individually stored records, each record carries a
+  <strong>schema version number</strong> that is looked up in a store of schemas. Over a connection, the two sides agree on it at the start. A store of schema versions also
+  lets you <em>check compatibility before deploying</em>.
+  <span class="badge later">Phase 4 · Kafka's schema registry</span></li>
+  <li><strong>Why no tags?</strong> Schemas can be <strong>generated</strong> automatically, for example one per database table for a nightly export. Nobody has to assign tag numbers
+  by hand when a column is added.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>Data outlives code</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Dataflow Through Databases", Fig. 4-7 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=151">pp. 129–131</a>
+</aside>
+
+<p>Storing data is "sending a message to your future self". A database can hold values written five milliseconds ago next to values written five years ago, still in their original
+encoding. A deploy replaces code in minutes, but "data outlives code". So databases need <em>both</em> directions: backward (new code reads old rows) and, during a rolling
+upgrade, forward (not-yet-upgraded code reads rows that new code just wrote).</p>
+
+<div class="callout trap">
+  <span class="label">The quiet data-loss bug</span>
+  <p>New code adds a field and writes it. Old code, still running, reads that record into its own model object, which has no slot for the new field, changes something, and
+  writes the object back. <strong>The new field is gone.</strong> The encoding formats can keep unknown fields, but your application's decode-into-object-and-re-encode step may drop
+  them (DDIA Fig. 4-7). Kleppmann: "not a hard problem; you just need to be aware of it."</p>
+</div>
+
+<p>For archives and analytics, re-encode the whole dump in the latest schema, and consider a <strong>column-oriented</strong> format such as Parquet. Huyen: row formats (CSV) suit
+writing and reading whole examples; column formats suit reading a few features out of thousands. Her 14 MB CSV became a 6 MB Parquet file
+(<a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=74">DMLS pp. 54–57</a>).
+<span class="badge later">Phase 12 · column storage</span></p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A model-serving API with a request schema is exactly this problem. During a canary or rolling deploy, v1 and v2 servers run together, and clients update on their own
+  schedule. Adding an optional feature field with a sensible default is safe. Making a new feature <em>required</em>, or reusing a dropped field's number for a different
+  feature, breaks either old clients or old servers, often silently, with a default value sliding into the model. The same rules apply to a feature-pipeline table read by
+  both last month's training job and today's.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The page in five lines</h2>
+
+<ol>
+  <li><strong>Backward</strong> = new code reads old data. <strong>Forward</strong> = old code reads new data. Rolling deploys and stored data need both.</li>
+  <li>Avoid language-specific formats (<code>pickle</code>) for anything durable or untrusted: they lock you into one language, version poorly, and can execute code.</li>
+  <li>JSON/CSV: universal but vague (big integers, float precision, no bytes). Fine between organizations; costly at scale.</li>
+  <li><strong>Protobuf/Thrift</strong>: field tags are the identity. Add with a new tag and a default; never reuse or change a tag; never add a required field.</li>
+  <li><strong>Avro</strong>: writer's schema vs reader's schema, resolved by name; add or remove only fields with defaults; keep schema versions in a registry. Old code must not drop unknown fields.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">During a rolling deploy, a v1 server reads a record just written by a v2 server. Which property is needed?</p>
+      <div class="opts">
+        <button>backward compatibility of the old server code</button>
+        <button>strict transactional isolation between the two servers</button>
+        <button>forward compatibility: old code reads new data</button>
+        <button>one schema strictly enforced by the database</button>
+      </div>
+      <p class="why">Old code reading data written by newer code is forward compatibility. It works only if old code ignores what it doesn't recognize.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">In Protobuf, why can you rename a field but never change its number?</p>
+      <div class="opts">
+        <button>encoded data stores the number, never the name</button>
+        <button>the name is used to sort encoded fields</button>
+        <button>numbers are hashed into names at compile time</button>
+        <button>renaming triggers a full rewrite of stored records</button>
+      </div>
+      <p class="why">The tag is the field's identity in the bytes. The name only lives in the schema and generated code.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">You drop field 7 from a Protobuf schema. What must you never do afterwards?</p>
+      <div class="opts">
+        <button>add any other new field to the same message</button>
+        <button>rename any of the remaining fields in the schema</button>
+        <button>read any records that were written before the change</button>
+        <button>reuse tag 7 for a new and different field</button>
+      </div>
+      <p class="why">Old records with tag 7 still exist. A new field with tag 7 would misread them as the new meaning.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">How does an Avro reader decode bytes that carry no field tags or types?</p>
+      <div class="opts">
+        <button>it guesses each type from the length of bytes</button>
+        <button>it resolves the writer's schema against its reader's schema</button>
+        <button>it requires writer and reader schemas to be identical</button>
+        <button>it reads the field names stored before each value</button>
+      </div>
+      <p class="why">The writer's schema (from the file header, a version number lookup, or the connection) is matched by name against the reader's schema.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Why is loading an untrusted pickle file dangerous?</p>
+      <div class="opts">
+        <button>pickle files are always much larger than JSON</button>
+        <button>pickle cannot ever represent floats with full precision</button>
+        <button>decoding can create objects that run attacker code</button>
+        <button>only the same Python version can read pickle</button>
+      </div>
+      <p class="why">Language-native decoders can instantiate arbitrary classes, which "often allows them to do terrible things such as remotely executing arbitrary code".</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 4, "Formats for Encoding Data" and "Dataflow Through Databases"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=133">pp. 111–131</a>).
+      Figures 4-1 to 4-5 show the actual bytes of each format and make the field-tag idea concrete. The REST/RPC and message-passing parts of the chapter come back in Phases 4 and 7.</li>
+    <li>Then: <strong>Huyen, <em>DMLS</em>, Ch. 3, "Data Formats"</strong>
+      (<a href="../../resources/Designing%20Machine%20Learning%20Systems.pdf#page=73">pp. 53–58</a>) for row vs column formats and why pandas is slow when used row by row.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/encoding.html">Encoding &amp; schema evolution cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0011-data-models-sql-vs-nosql.html">← 0011 · Data models: SQL vs NoSQL</a>
+  <span class="disabled">Next: 0013 · Replication (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
