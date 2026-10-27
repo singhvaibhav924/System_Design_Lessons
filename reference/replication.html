@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replication</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 2 (replication)</p>
+<h1>Replication</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0013-replication-leaders-followers-failover.html">Lesson 0013</a>. Lessons 0014–0015 will add replication lag and multi-leader / leaderless replication. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=173">DDIA Ch. 5</a>.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Why replicate</h3><p>Latency (near users) · availability (survive failures) · read throughput. Hard part = changes. Three algorithms: single-leader, multi-leader, leaderless.</p><p class="from">DDIA p. 151</p></div>
+  <div class="card"><h3>Single leader</h3><p>All writes → leader → ordered replication log → followers apply in order. Reads anywhere. PostgreSQL, MySQL, MongoDB, Kafka. Scales reads, <b>not writes</b>.</p><p class="from">DDIA pp. 152–153 · Xu p. 12</p></div>
+  <div class="card"><h3>Sync / async / semi-sync</h3><p>Sync: safe copy, but a slow follower blocks writes. Async: never blocks, but acknowledged writes can be lost on failover. Semi-sync: one sync follower → every ack on ≥ 2 nodes.</p><p class="from">DDIA pp. 153–155</p></div>
+  <div class="card"><h3>New follower</h3><p>Lock-free consistent snapshot + its exact log position (PG LSN, MySQL binlog coordinates) → copy → replay backlog → caught up.</p><p class="from">DDIA pp. 155–156</p></div>
+  <div class="card"><h3>Follower failure</h3><p>Catch-up recovery: ask the leader for changes since the last applied one.</p><p class="from">DDIA p. 156</p></div>
+  <div class="card"><h3>Failover</h3><p>Detect (timeout ~30 s) → choose most up-to-date follower (election/controller) → reconfigure clients and the old leader.</p><p class="from">DDIA p. 157</p></div>
+  <div class="card"><h3>Failover pitfalls</h3><p>Lost async writes discarded · other systems diverge (GitHub reused auto-increment keys → private data leaked via Redis) · split brain (STONITH) · timeout too short/long. Many teams fail over manually.</p><p class="from">DDIA pp. 157–158</p></div>
+  <div class="card"><h3>Replication logs</h3><p>Statement (NOW()/RAND() break) · WAL shipping (byte-level, version-locked, PG/Oracle) · logical row-based (decoupled, enables CDC, MySQL binlog) · trigger-based (flexible, slow).</p><p class="from">DDIA pp. 158–161</p></div>
+</div>
+</main>
+</body>
+</html>

@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replication and Failover</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/replication-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0013</span>
+</nav>
+
+<p class="kicker">Phase 2.3 · Replication (part 1)</p>
+<h1>Replication: one leader, many followers, and what goes wrong when the leader dies</h1>
+<p class="subtitle">Keeping copies of a database on several machines is easy until something changes. This lesson covers how the common leader–follower setup copies changes, what "synchronous" really buys you, and why failover is the dangerous part.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main sources</b> DDIA Ch. 5 "Leaders and Followers" · Alex Xu Ch. 1 "Database replication"</span>
+  <span><b>Roadmap topics</b> primary–replica · sync / async / semi-sync · read replicas · failover · split brain</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain how a write travels from the leader to its followers, what synchronous, asynchronous and semi-synchronous replication each risk, and the four ways an automatic
+  failover can go wrong. That turns "just add a replica" into an answer with its trade-offs stated.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Why replicate, and what makes it hard</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 5 introduction —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=173">pp. 151–152</a>
+</aside>
+
+<p><strong>Replication</strong> means keeping a copy of the same data on several networked machines. Kleppmann gives three reasons: be <strong>close to users</strong> (lower latency),
+<strong>keep working when machines fail</strong> (availability, <a href="../phase-01-vocabulary/0003-availability-reliability-durability.html">lesson 0003</a>), and <strong>serve more reads</strong>
+(throughput). For now, assume every machine holds the whole dataset; splitting the data comes in <span class="badge later">0016 · sharding</span>.</p>
+
+<p>If data never changed, you'd copy it once and be done. "All of the difficulty in replication lies in handling changes." Almost every distributed database uses one of three
+approaches: <strong>single-leader</strong> (this lesson and the next), <strong>multi-leader</strong> and <strong>leaderless</strong> <span class="badge later">0015</span>.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Leader and followers</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Leaders and Followers", Fig. 5-1 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=174">pp. 152–153</a>;
+  Xu, "Database replication" —
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=12">pp. 12–14</a>
+</aside>
+
+<ol>
+  <li>One replica is the <strong>leader</strong> (also called master or primary). <strong>All writes go to it.</strong> It writes them locally first.</li>
+  <li>The others are <strong>followers</strong> (read replicas, secondaries). The leader sends each change to them as a <strong>replication log</strong>, and they apply the changes
+  <em>in the same order</em>.</li>
+  <li>Reads can go to the leader or to any follower.</li>
+</ol>
+
+<p>This is built into PostgreSQL, MySQL, Oracle and SQL Server, and into MongoDB. It's also how Kafka keeps its partitions safe
+<span class="badge later">Phase 4</span>. Xu's interview version: "most applications require a much higher ratio of reads to writes", so you run one primary for writes and
+several replicas for reads, and get better performance, reliability and availability.</p>
+
+<div class="callout trap">
+  <span class="label">What read replicas don't fix</span>
+  <p>Every write still goes through <strong>one machine</strong>. Replicas scale reads, not writes. If the write rate is the problem, you need to split the data
+  (<span class="badge later">0016 · sharding</span>). Saying this unprompted in an interview shows you know where the limit is.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Synchronous, asynchronous, semi-synchronous</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Synchronous Versus Asynchronous Replication", Fig. 5-2 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=175">pp. 153–155</a>
+</aside>
+
+<p>The question is <em>when the leader tells the client "done"</em>.</p>
+<ul>
+  <li><strong>Synchronous follower:</strong> the leader waits until that follower confirms it has the write. That guarantees an up-to-date copy, but if that follower is slow or
+  down, "the leader must block all writes". Making <em>every</em> follower synchronous would let any single outage halt the system.</li>
+  <li><strong>Asynchronous follower:</strong> the leader sends the change and doesn't wait. Usually it arrives in under a second, but "there is no guarantee". Followers can fall
+  minutes behind during recovery, overload or network trouble. If the leader dies, <strong>acknowledged writes that hadn't been copied are lost</strong>. "A write is not guaranteed to
+  be durable, even if it has been confirmed to the client."</li>
+  <li><strong>Semi-synchronous:</strong> exactly <em>one</em> follower is synchronous and the rest are async. If the sync one struggles, another is promoted to sync. Every
+  acknowledged write is then on at least two machines.</li>
+</ul>
+
+<p>Despite the risk, fully asynchronous is common, "especially if there are many followers or if they are geographically distributed", because the leader keeps accepting writes
+even when followers lag. Play with it:</p>
+
+<div class="figure wide">
+  <div class="repl-sim"></div>
+  <div class="caption">Try: (1) fully asynchronous, write four times, let replication catch up once, write twice more, then crash the leader: some acknowledged writes are lost.
+  (2) Switch to semi-synchronous and repeat: nothing acknowledged is lost. (3) Untick "fenced", crash, bring the old leader back and write: split brain.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Adding a new follower without downtime</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Setting Up New Followers" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=177">pp. 155–156</a>
+</aside>
+
+<p>You can't just copy the data files, because writes keep changing them during the copy. Instead: take a <strong>consistent snapshot</strong> without locking the database (the
+same snapshot mechanism as backups, <a href="0009-transactions-acid-and-snapshot-isolation.html">lesson 0009</a>), copy it to the new node, then replay every change since the
+snapshot. That only works because the snapshot is tied to an exact position in the leader's log: PostgreSQL's <em>log sequence number</em>, MySQL's <em>binlog coordinates</em>. Once the
+backlog is applied, the follower has "caught up".</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>When nodes fail: catch-up is easy, failover is not</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Handling Node Outages" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=178">pp. 156–158</a>
+</aside>
+
+<p><strong>A follower fails:</strong> it knows the last change it applied, so after restarting it asks the leader for everything since then. That's simple.</p>
+
+<p><strong>The leader fails:</strong> a follower must be promoted, clients must send writes to it, and the other followers must follow it. This is <strong>failover</strong>. Done
+automatically, it has three steps: <em>decide the leader is dead</em> (in practice a timeout, "say, 30 seconds"), <em>choose a new leader</em> (usually the most up-to-date follower,
+by election or by a controller), and <em>reconfigure</em> everyone, including the old leader if it comes back. Kleppmann: failover "is fraught with things that can go wrong":</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>What goes wrong</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Lost writes</strong></td><td>With async replication, the new leader lacks the old leader's last writes. "The most common solution… is simply discarded", even though clients were told they succeeded.</td></tr>
+    <tr><td><strong>Other systems disagree</strong></td><td>At GitHub, an out-of-date MySQL follower became leader and <strong>reused auto-increment primary keys</strong> that the old leader had already handed out. Those keys were also
+      used in Redis, so the two stores no longer matched, and "some private data [was] disclosed to the wrong users".</td></tr>
+    <tr><td><strong>Split brain</strong></td><td>Two nodes both believe they are leader and both accept writes, so data gets lost or corrupted. Some systems shut one node down
+      (bluntly named <em>STONITH</em>, "Shoot The Other Node In The Head"), but a careless version can shut down <em>both</em>.</td></tr>
+    <tr><td><strong>Wrong timeout</strong></td><td>Too long means slow recovery. Too short means a load spike triggers an unnecessary failover, which "is likely to make the situation worse".</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>"There are no easy solutions", so "some operations teams prefer to perform failovers manually, even if the software supports automatic failover." You've seen the tools for
+this: timeouts and false deaths, the majority vote and fencing tokens from <a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">lesson 0006</a>. Agreeing safely
+on a single new leader is <em>consensus</em> <span class="badge later">Phase 5 · Raft</span>.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>What exactly is sent to followers?</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Implementation of Replication Logs" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=180">pp. 158–161</a>
+</aside>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Method</th><th>What's shipped</th><th>Catch</th><th>Used by</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Statement-based</strong></td><td>The SQL statements themselves</td><td><code>NOW()</code>, <code>RAND()</code>, auto-increment and triggers can give different results on each replica</td><td>MySQL before 5.1; VoltDB (deterministic transactions)</td></tr>
+    <tr><td><strong>WAL shipping</strong></td><td>The storage engine's own write-ahead log (<a href="0007-storage-engines-lsm-and-btrees.html">0007</a>): which bytes changed in which disk pages</td><td>Tied to the storage format, so leader and followers usually must run the <strong>same version</strong>, and upgrades need downtime</td><td>PostgreSQL, Oracle</td></tr>
+    <tr><td><strong>Logical (row-based)</strong></td><td>Row-level changes: new values for inserts, the key for deletes</td><td>Independent of storage internals, so mixed versions work and <strong>outside systems can read it</strong></td><td>MySQL binlog (row mode)</td></tr>
+    <tr><td><strong>Trigger-based</strong></td><td>Application code run by database triggers</td><td>Flexible (subset of data, other databases), but slower and more bug-prone</td><td>Databus, Bucardo</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The logical log has a second life. Streaming a database's row changes to other systems (a warehouse, a search index, a cache) is <strong>change data capture (CDC)</strong>
+<span class="badge later">Phase 12</span>.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Point heavy readers (training-data exports, analytics notebooks, feature backfills) at a <strong>read replica</strong>, not the primary that serves the product. Remember that
+  the replica is asynchronous, so it may be seconds behind; the next lesson is about exactly that. And when a team says "we stream Postgres changes into the feature store", that's
+  CDC built on the logical replication log.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The page in five lines</h2>
+
+<ol>
+  <li>Single-leader: all writes go to the leader, which streams an ordered log to followers. Reads can go anywhere. Replicas scale <strong>reads, not writes</strong>.</li>
+  <li><strong>Async</strong>: fast and keeps working, but acknowledged writes can be lost on failover. <strong>Sync</strong>: safe, but one slow follower blocks writes. <strong>Semi-sync</strong>: one sync follower.</li>
+  <li>New follower = consistent snapshot + replay from that snapshot's exact log position.</li>
+  <li>Failover risks: lost writes, other systems going out of sync (GitHub's reused keys), split brain, wrong timeout. Many teams fail over manually.</li>
+  <li>Replication logs: statement (nondeterminism), WAL (version-locked), logical row-based (decoupled, enables CDC), trigger (flexible, slow).</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A database is overloaded by writes. Will adding five read replicas help?</p>
+      <div class="opts">
+        <button>yes, because writes are spread across all six machines</button>
+        <button>no, because every write still goes through one leader</button>
+        <button>yes, because replicas accept writes when leaders are busy</button>
+        <button>no, because replicas slow every read down even further</button>
+      </div>
+      <p class="why">Single-leader replication scales reads only. Write throughput needs sharding.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">With fully asynchronous replication, the leader dies right after acknowledging a write. What can happen?</p>
+      <div class="opts">
+        <button>the write is blocked until a follower confirms it</button>
+        <button>the client receives an error and retries the write</button>
+        <button>every follower is guaranteed to already have the write</button>
+        <button>the acknowledged write is lost after the failover completes</button>
+      </div>
+      <p class="why">The leader confirmed before any follower had the write. The new leader never saw it, and it's usually discarded.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">What does semi-synchronous replication guarantee?</p>
+      <div class="opts">
+        <button>every acknowledged write is on at least two nodes</button>
+        <button>every follower has each write before the client's acknowledgement</button>
+        <button>writes continue even if all followers are completely down</button>
+        <button>reads from any follower always return the latest data</button>
+      </div>
+      <p class="why">One follower is synchronous, so the leader plus that follower both hold every acknowledged write.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Why can't PostgreSQL's WAL shipping usually run different database versions on leader and followers?</p>
+      <div class="opts">
+        <button>the WAL holds SQL that each version parses differently</button>
+        <button>followers must always run a newer version than leaders</button>
+        <button>the WAL describes changed bytes in pages, not rows</button>
+        <button>logical replication is strictly required for every single failover</button>
+      </div>
+      <p class="why">A physical log is coupled to the storage engine's layout, so zero-downtime version upgrades are hard.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">After a failover, the old leader returns and still accepts writes. What is this called?</p>
+      <div class="opts">
+        <button>replication lag between the leader and its followers</button>
+        <button>split brain, two nodes both acting as leader</button>
+        <button>catch-up recovery of a briefly disconnected follower node</button>
+        <button>write skew between two concurrent transactions on leaders</button>
+      </div>
+      <p class="why">Two leaders accepting writes is split brain. Fencing or a newer term/epoch number must make the old leader step down.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 5, "Leaders and Followers"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=173">pp. 151–161</a>).
+      The failover section (pp. 157–158), with the GitHub incident, is the part interviewers most like to probe.</li>
+    <li>Then: <strong>Xu, Ch. 1, "Database replication"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=12">pp. 12–14</a>) for the short interview framing.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/replication.html">Replication cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0012-encoding-and-schema-evolution.html">← 0012 · Encoding &amp; schema evolution</a>
+  <span class="disabled">Next: 0014 · Replication lag (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
