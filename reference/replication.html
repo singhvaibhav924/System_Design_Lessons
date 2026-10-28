@@ -21,7 +21,7 @@
 
 <p class="kicker">Reference · Phase 2 (replication)</p>
 <h1>Replication</h1>
-<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0013-replication-leaders-followers-failover.html">Lesson 0013</a>. Lessons 0014–0015 will add replication lag and multi-leader / leaderless replication. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=173">DDIA Ch. 5</a>.</p>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0013-replication-leaders-followers-failover.html">Lesson 0013</a>. Replication lag: <a href="../lessons/phase-02-databases/0014-replication-lag.html">Lesson 0014</a>. Lesson 0015 will add multi-leader / leaderless replication. Source: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=173">DDIA Ch. 5</a>.</p>
 
 <div class="card-grid wide">
   <div class="card"><h3>Why replicate</h3><p>Latency (near users) · availability (survive failures) · read throughput. Hard part = changes. Three algorithms: single-leader, multi-leader, leaderless.</p><p class="from">DDIA p. 151</p></div>
@@ -32,6 +32,11 @@
   <div class="card"><h3>Failover</h3><p>Detect (timeout ~30 s) → choose most up-to-date follower (election/controller) → reconfigure clients and the old leader.</p><p class="from">DDIA p. 157</p></div>
   <div class="card"><h3>Failover pitfalls</h3><p>Lost async writes discarded · other systems diverge (GitHub reused auto-increment keys → private data leaked via Redis) · split brain (STONITH) · timeout too short/long. Many teams fail over manually.</p><p class="from">DDIA pp. 157–158</p></div>
   <div class="card"><h3>Replication logs</h3><p>Statement (NOW()/RAND() break) · WAL shipping (byte-level, version-locked, PG/Oracle) · logical row-based (decoupled, enables CDC, MySQL binlog) · trigger-based (flexible, slow).</p><p class="from">DDIA pp. 158–161</p></div>
+  <div class="card"><h3>Eventual consistency</h3><p>Async followers converge if writes stop, but “eventually” has no bound: normally &lt; 1 s, under load seconds to minutes. Applies to async PostgreSQL/MySQL too.</p><p class="from">DDIA p. 162</p></div>
+  <div class="card"><h3>Read-your-writes</h3><p>User always sees own updates. Read own-editable data from leader · leader for ~1 min after a write · replica must reach the user's last write position (LSN beats wall clock). Cross-device needs central metadata.</p><p class="from">DDIA pp. 162–164</p></div>
+  <div class="card"><h3>Monotonic reads</h3><p>No going back in time for one user. Pin user to one replica (hash of user ID); reroute on failure.</p><p class="from">DDIA pp. 164–165</p></div>
+  <div class="card"><h3>Consistent prefix</h3><p>Writes read in the order written (no answer before question). Problem in sharded DBs; keep causally related writes in one partition or track causality.</p><p class="from">DDIA pp. 165–167</p></div>
+  <div class="card"><h3>Design test</h3><p>Ask: what if lag were minutes? If that hurts users, provide a stronger guarantee explicitly. App-level fixes are easy to get wrong.</p><p class="from">DDIA p. 167</p></div>
 </div>
 </main>
 </body>

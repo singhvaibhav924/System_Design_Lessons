@@ -2,6 +2,7 @@
    Replication widgets (DDIA Ch. 5)
    <div class="repl-sim"></div>  one leader + two followers: async vs semi-sync writes, lag, leader crash,
                                  failover, and the old leader coming back (fenced or split brain)
+   <div class="lag-sim"></div>   the three replication-lag anomalies (DDIA Figs. 5-3, 5-4, 5-5), each with and without its fix
    ========================================================== */
 (function () {
   var css = "\
@@ -115,7 +116,72 @@
     reset();
   }
 
+
+  function lagSim(root) {
+    root.classList.add("rw");
+    var SC = {
+      ryw: { t: "Read your own writes", fix: "Read the user's own data from the leader",
+        steps: [
+          { at: 0, m: "User 1234 posts a comment. The write goes to the <strong>leader</strong>.", w: [["L", "comment by 1234"]] },
+          { at: 0.5, m: function (f) { return f ? "Half a second later they reload. Because this is <em>their own</em> data, the read goes to the <strong>leader</strong>: the comment is there." : "Half a second later they reload. The read is sent to <strong>follower 2</strong>, which is 5 s behind: <strong>their comment is missing</strong>. It looks as if the post was lost."; },
+            read: function (f) { return f ? "L" : "F2"; }, want: "comment by 1234" },
+          { at: 6, m: "After 6 s every follower has caught up. The anomaly was temporary, which is what <em>eventual</em> consistency means." }
+        ] },
+      mono: { t: "Monotonic reads", fix: "Pin each user to one replica (hash of user ID)",
+        steps: [
+          { at: 0, m: "User 1234 adds a comment on the leader.", w: [["L", "comment by 1234"]] },
+          { at: 1, m: function (f) { return f ? "User 2345 loads the page. hash(2345) picks <strong>follower 1</strong> (0.2 s behind): the comment is visible." : "User 2345 loads the page. A random choice picks <strong>follower 1</strong> (0.2 s behind): the comment is visible."; }, read: function () { return "F1"; }, want: "comment by 1234" },
+          { at: 2, m: function (f) { return f ? "User 2345 refreshes. hash(2345) picks <strong>follower 1</strong> again: still visible. Time only moves forward for this user." : "User 2345 refreshes. This time the random choice is <strong>follower 2</strong> (5 s behind): <strong>the comment has vanished</strong>. Time went backwards."; },
+            read: function (f) { return f ? "F1" : "F2"; }, want: "comment by 1234" }
+        ] },
+      prefix: { t: "Consistent prefix reads", fix: "Write causally related messages to the same partition",
+        steps: [
+          { at: 0, m: function (f) { return "Mr. Poons asks: <em>“How far into the future can you see?”</em> It's stored on " + (f ? "partition 1" : "<strong>partition 1</strong>, whose follower is 5 s behind") + "."; }, w: [["P1", "Q: how far ahead?"]] },
+          { at: 1, m: function (f) { return "Mrs. Cake answers: <em>“About ten seconds usually.”</em> " + (f ? "Same conversation, so it goes to <strong>partition 1</strong> too, after the question." : "It lands on <strong>partition 2</strong>, whose follower is only 0.2 s behind."); },
+            w: function (f) { return [[f ? "P1" : "P2", "A: about ten seconds"]]; } },
+          { at: 2, m: function (f) { return f ? "An observer reads both partitions' followers. Partition 1's follower is behind, so they see <strong>neither message yet</strong>, which is fine. When they appear, the question comes first." : "An observer reads both partitions' followers: they see the <strong>answer but not the question</strong>. Mrs. Cake appears to answer before being asked."; } }
+        ] }
+    };
+    root.innerHTML = '<div class="ctrl"><span class="seg">' + Object.keys(SC).map(function (k) { return '<button data-s="' + k + '">' + SC[k].t + "</button>"; }).join("") + "</span></div>" +
+      '<div class="ctrl"><label class="chk"><input type="checkbox" class="fx"> <span class="fxl"></span></label></div>' +
+      '<div class="btns"><button class="primary nx"></button><button class="rs">Reset</button></div><div class="nodes"></div><ul class="log"></ul>';
+    var cur = "ryw", S;
+    function nodesFor(k) {
+      if (k === "prefix") return [{ id: "P1", name: "Partition 1 leader", lag: 0 }, { id: "P1f", src: "P1", name: "Partition 1 follower", lag: 5 }, { id: "P2", name: "Partition 2 leader", lag: 0 }, { id: "P2f", src: "P2", name: "Partition 2 follower", lag: 0.2 }];
+      return [{ id: "L", name: "Leader", lag: 0 }, { id: "F1", src: "L", name: "Follower 1", lag: 0.2 }, { id: "F2", src: "L", name: "Follower 2", lag: 5 }];
+    }
+    function reset() { S = { i: 0, t: 0, writes: [], read: null, ok: null, msgs: [] }; root.querySelector(".fxl").textContent = "Fix: " + SC[cur].fix; render(); }
+    function has(node, w) { var src = node.src || node.id; return S.writes.some(function (x) { return x.at === src && x.v === w.v && S.t >= x.t + node.lag; }); }
+    root.querySelector(".nx").addEventListener("click", function () {
+      var sc = SC[cur]; if (S.i >= sc.steps.length) return;
+      var f = root.querySelector(".fx").checked, st = sc.steps[S.i]; S.t = st.at; S.read = null;
+      var w = typeof st.w === "function" ? st.w(f) : st.w;
+      (w || []).forEach(function (p) { S.writes.push({ at: p[0], v: p[1], t: st.at }); });
+      if (st.read) { var nid = st.read(f), node = nodesFor(cur).filter(function (n) { return n.id === nid; })[0]; S.read = nid; S.ok = has(node, { v: st.want }); }
+      if (cur === "prefix" && S.i === 2) { S.read = f ? "P1f" : "BOTH"; }
+      S.msgs.push((typeof st.m === "function" ? st.m(f) : st.m)); S.i++; render();
+    });
+    root.querySelector(".rs").addEventListener("click", reset);
+    root.querySelector(".fx").addEventListener("change", reset);
+    root.querySelectorAll(".seg button").forEach(function (b) { b.addEventListener("click", function () { cur = b.getAttribute("data-s"); root.querySelector(".fx").checked = false; reset(); }); });
+    function render() {
+      root.querySelectorAll(".seg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-s") === cur); });
+      var sc = SC[cur], nx = root.querySelector(".nx"); nx.disabled = S.i >= sc.steps.length;
+      nx.textContent = S.i >= sc.steps.length ? "Done. Toggle the fix and replay" : "Next ▶ (t = " + sc.steps[S.i].at + " s)";
+      root.querySelector(".nodes").innerHTML = nodesFor(cur).map(function (n) {
+        var vis = S.writes.filter(function (x) { return x.at === (n.src || n.id) && S.t >= x.t + n.lag; });
+        var pend = S.writes.filter(function (x) { return x.at === (n.src || n.id) && S.t < x.t + n.lag; });
+        var reading = S.read === n.id || (S.read === "BOTH" && /f$/.test(n.id)) || (S.read === "P1f" && /f$/.test(n.id));
+        var chips = vis.map(function (x) { return '<span class="chip">' + x.v + "</span>"; }).join("") + pend.map(function (x) { return '<span class="chip x">' + x.v + " (in transit)</span>"; }).join("");
+        return '<div class="node' + (reading ? " leader" : "") + '"><h4>' + n.name + '<span class="role">' + (n.lag ? n.lag + " s behind" : "up to date") + (reading ? " · being read" : "") + '</span></h4><div class="chips">' + (chips || '<span class="lag">nothing yet</span>') + "</div></div>";
+      }).join("");
+      root.querySelector(".log").innerHTML = S.msgs.map(function (m, i) { return "<li><b>t=" + sc.steps[i].at + "s</b>" + m + "</li>"; }).join("");
+    }
+    reset();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll(".repl-sim").forEach(replSim);
+    document.querySelectorAll(".lag-sim").forEach(lagSim);
   });
 })();

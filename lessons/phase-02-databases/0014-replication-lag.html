@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replication Lag</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/replication-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0014</span>
+</nav>
+
+<p class="kicker">Phase 2.3 · Replication (part 2)</p>
+<h1>Replication lag: when your own edit disappears and time runs backwards</h1>
+<p class="subtitle">Reading from asynchronous followers is how you scale reads. It also means users sometimes see the past. This lesson covers the three anomalies they'll notice and the guarantee that fixes each one.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~15 min</span>
+  <span><b>Main source</b> DDIA Ch. 5 "Problems with Replication Lag"</span>
+  <span><b>Roadmap topics</b> replication lag · eventual consistency · read-your-writes · monotonic reads · consistent prefix</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Name the anomaly behind a "my change vanished" or "it appeared then disappeared" bug, and pick the matching fix: read-your-writes, monotonic reads or consistent prefix reads.
+  You'll also be able to say precisely what "eventually consistent" does and doesn't promise.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>"Eventually" has no deadline</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Problems with Replication Lag" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=183">pp. 161–162</a>
+</aside>
+
+<p>The read-scaling recipe from <a href="0013-replication-leaders-followers-failover.html">lesson 0013</a> (many followers, reads spread across them) "only realistically works with
+asynchronous replication". So a follower may be behind, and the same query on the leader and on a follower can return different answers. If writes stopped, the followers
+would catch up. That's <strong>eventual consistency</strong>.</p>
+
+<p>Kleppmann's point is that "eventually" is "deliberately vague: in general, there is no limit to how far a replica can fall behind." Normally the <strong>replication lag</strong>
+is a fraction of a second. Near capacity or during network trouble it becomes "several seconds or even minutes", and then users notice. Eventual consistency isn't just a NoSQL
+thing either: an asynchronously replicated PostgreSQL or MySQL behaves exactly the same way.</p>
+
+<p>Three anomalies show up, each with its own fix. Step through each one, then tick its fix and replay:</p>
+
+<div class="figure wide">
+  <div class="lag-sim"></div>
+  <div class="caption">DDIA's Figures 5-3 (read your own writes), 5-4 (monotonic reads) and 5-5 (consistent prefix reads). Each follower's lag is fixed so the timing is repeatable.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Read-your-writes: "I posted it, where did it go?"</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Reading Your Own Writes", Fig. 5-3 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=184">pp. 162–164</a>
+</aside>
+
+<p>A user submits something, which goes to the leader, then views it, which is read from a lagging follower. "To the user, it looks as though the data they submitted was
+lost." <strong>Read-after-write (read-your-writes) consistency</strong> guarantees that users always see <em>their own</em> updates after a reload. It promises nothing about other
+users' updates. Ways to get it:</p>
+<ul>
+  <li><strong>Read anything the user may have changed from the leader.</strong> For example, your own profile comes from the leader and other people's profiles from followers.</li>
+  <li>If almost everything is editable, use a <strong>time window</strong>: read from the leader for a minute after the user's last write, or avoid followers more than a minute behind.</li>
+  <li><strong>Remember the position of the user's last write</strong> and only read from a replica that has reached it, or wait until it has. A logical position such as the log
+  sequence number is safer than a wall-clock timestamp, which brings back the clock problems from <a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">lesson 0006</a>.</li>
+</ul>
+<p>Two complications: multiple datacenters (reads that need the leader must be sent to the leader's datacenter) and <strong>multiple devices</strong>. What you saved on your laptop should
+appear on your phone, but the phone doesn't know about the laptop's last write, so that information has to be stored centrally.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A deploy script writes "model v7 is now production" to the registry's primary database. Serving pods then poll the registry, via a read replica, to decide which model to load. For a few seconds, or
+  minutes if the replica is struggling, some pods load v7 and some keep v6. If that matters, read the decision from the leader or pass the version explicitly in the deploy. Don't rely on
+  a replica to tell you what just changed.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Monotonic reads: "it was there a second ago"</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Monotonic Reads", Fig. 5-4 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=186">pp. 164–165</a>
+</aside>
+
+<p>A user refreshes twice and each request goes to a random replica: first a fresh one, then a stale one. A comment that appeared now disappears, so time seems to run
+backwards, which is "very confusing". <strong>Monotonic reads</strong> guarantee that one user's successive reads never go back in time. They may still see old data, just never
+<em>older than what they've already seen</em>. It sits between strong and eventual consistency.</p>
+<p>The fix: each user always reads from <strong>the same replica</strong>, chosen for example by a hash of their user ID instead of at random. If that replica fails, the user has to be
+moved to another one. This is the same "sticky" routing idea as session affinity in <a href="../phase-01-vocabulary/0001-scaling-up-out-and-state.html">lesson 0001</a>.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Consistent prefix reads: the answer before the question</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Consistent Prefix Reads", Fig. 5-5 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=187">pp. 165–167</a>
+</aside>
+
+<p>Mr. Poons asks "How far into the future can you see?" and Mrs. Cake replies "About ten seconds usually." If the two messages are stored in different
+<span class="term" data-tip="One slice of a dataset split across machines (a shard). Each slice has its own leader and followers." data-later="0016 · Sharding">partitions</span>
+that replicate at different speeds, an observer can see the answer before the question. <strong>Consistent prefix reads</strong> guarantee that writes made in some order are
+<em>read</em> in that order.</p>
+<p>With one leader applying everything in one order this can't happen. It's a problem in <strong>sharded</strong> databases, where partitions are independent and there's no global
+order. Fixes: put causally related writes (one conversation, one user's events) in the <strong>same partition</strong>, or track "happened-before" relationships explicitly
+<span class="badge later">0015 · version vectors</span>.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Design for lag measured in minutes</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Solutions for Replication Lag" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=189">p. 167</a>
+</aside>
+
+<p>Kleppmann's test: imagine the lag grows "to several minutes or even hours". If the answer is "no problem", fine. If not, design for a stronger guarantee, because "pretending that
+replication is synchronous when in fact it is asynchronous is a recipe for problems down the line." Fixing it in application code is "complex and easy to get wrong", which is why
+databases that offer stronger guarantees (transactions, and later linearizability) exist.</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Guarantee</th><th>Prevents</th><th>Typical fix</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Read-your-writes</strong></td><td>Your own update seems lost after a reload</td><td>Read your own data from the leader; or read from the leader for a while after a write; or wait for a replica past your last write's position</td></tr>
+    <tr><td><strong>Monotonic reads</strong></td><td>Seeing newer data, then older data</td><td>Pin each user to one replica (hash of user ID)</td></tr>
+    <tr><td><strong>Consistent prefix</strong></td><td>Seeing an effect before its cause</td><td>Keep causally related writes in one partition; track causality</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout trap">
+  <span class="label">Interview red flag</span>
+  <p>"Reads go to replicas" with no follow-up. The strong answer adds: "replicas are async, so after a user edits their profile we read it from the primary for a short window, and
+  we route each user to a consistent replica." Naming read-your-writes and monotonic reads by name shows you've seen the bug before.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>The page in five lines</h2>
+
+<ol>
+  <li>Async followers lag. Normally by under a second, but "eventually" has no upper bound, and under load it becomes seconds or minutes.</li>
+  <li><strong>Read-your-writes</strong>: users always see their own changes. Read their data from the leader, or wait for a replica that's caught up to their last write.</li>
+  <li><strong>Monotonic reads</strong>: no going back in time. Keep each user on one replica.</li>
+  <li><strong>Consistent prefix</strong>: no effect before its cause. Keep related writes in one partition.</li>
+  <li>Ask "what if the lag were ten minutes?" If that's not fine, design for it explicitly.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">A user edits their bio and, after a reload, sees the old bio. Which guarantee is missing?</p>
+      <div class="opts">
+        <button>monotonic reads across several page refreshes</button>
+        <button>consistent prefix reads across several partitions</button>
+        <button>read-your-writes for the user's own data</button>
+        <button>serializable isolation for the bio update</button>
+      </div>
+      <p class="why">Their own write went to the leader, and the reload hit a lagging follower. Read-your-writes guarantees they see their own updates.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">What's the simplest way to give a user monotonic reads?</p>
+      <div class="opts">
+        <button>route all that user's reads to one replica</button>
+        <button>send every read from every user to leaders</button>
+        <button>make every follower replicate synchronously from the leader</button>
+        <button>add a timestamp column to each row read</button>
+      </div>
+      <p class="why">A single replica only moves forward, so pinning the user (for example by hashing their ID) means they never read an older state.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">"Eventually consistent" guarantees that replicas converge within…</p>
+      <div class="opts">
+        <button>about one second under a normal production load</button>
+        <button>the configured replication timeout of that particular database</button>
+        <button>the time it takes to run one transaction</button>
+        <button>no fixed time at all; lag is unbounded</button>
+      </div>
+      <p class="why">"There is no limit to how far a replica can fall behind." Usually it's quick, but nothing promises that.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">Readers see a reply before the message it answers. Where is this most likely?</p>
+      <div class="opts">
+        <button>a single-leader database with one write order</button>
+        <button>a sharded database whose partitions replicate separately</button>
+        <button>a database running with serializable snapshot isolation</button>
+        <button>an in-memory database without any replicas configured</button>
+      </div>
+      <p class="why">Independent partitions have no global order. Consistent prefix reads need related writes in one partition, or causality tracking.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Why is a log sequence number better than a wall-clock time for "has this replica caught up with my write?"</p>
+      <div class="opts">
+        <button>log sequence numbers are much smaller to store</button>
+        <button>wall clocks cannot be read by database replicas</button>
+        <button>clocks on different machines drift and can disagree</button>
+        <button>log sequence numbers also encrypt the replication stream</button>
+      </div>
+      <p class="why">A position in the leader's log orders writes exactly. Comparing clocks across machines brings back clock-skew problems.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 5, "Problems with Replication Lag"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=183">pp. 161–167</a>).
+      Short, and the three figures are the whole lesson in pictures.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/replication.html">Replication cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0013-replication-leaders-followers-failover.html">← 0013 · Replication &amp; failover</a>
+  <span class="disabled">Next: 0015 · Multi-leader &amp; leaderless replication (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
