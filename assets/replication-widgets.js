@@ -3,6 +3,7 @@
    <div class="repl-sim"></div>  one leader + two followers: async vs semi-sync writes, lag, leader crash,
                                  failover, and the old leader coming back (fenced or split brain)
    <div class="lag-sim"></div>   the three replication-lag anomalies (DDIA Figs. 5-3, 5-4, 5-5), each with and without its fix
+   <div class="quorum-sim"></div> leaderless n / w / r: which replicas got the write, which were read, and the exact chance of a stale read
    ========================================================== */
 (function () {
   var css = "\
@@ -37,6 +38,28 @@
 .rw .log li{padding:6px 0;border-bottom:1px solid var(--rule);margin:0}\
 .rw .log li b{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--ink-3);margin-right:8px}";
   var st = document.createElement("style"); st.textContent = css; document.head.appendChild(st);
+
+
+  var css2 = "\
+.rw .ring{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}\
+.rw .rep{width:74px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);padding:7px 6px;text-align:center;font-size:12px;color:var(--ink-3)}\
+.rw .rep b{display:block;font-family:var(--mono);font-size:15px;color:var(--ink-2)}\
+.rw .rep.new b{color:var(--ink)}\
+.rw .rep.new{background:color-mix(in srgb,var(--viz-1) 16%,transparent)}\
+.rw .rep.read{border-color:var(--viz-1);box-shadow:0 0 0 2px color-mix(in srgb,var(--viz-1) 22%,transparent)}\
+.rw .rep.down{opacity:.4;border-style:dashed}\
+.rw .ctrl output{font-family:var(--mono);font-size:13px;min-width:22px;display:inline-block;color:var(--ink)}\
+.rw input[type=range]{accent-color:var(--viz-1);width:120px}\
+.rw .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:10px}\
+.rw .tile{border:1px solid var(--rule);border-radius:10px;padding:9px 11px;background:var(--surface)}\
+.rw .tile .t{font-size:12px;color:var(--ink-3)}\
+.rw .tile .v{font-size:19px;font-weight:600;font-family:var(--mono)}\
+.rw .verdict{display:flex;gap:10px;align-items:center;margin:10px 0 2px;font-size:14.5px;font-weight:600}\
+.rw .verdict small{display:block;font-size:13px;font-weight:400;color:var(--ink-3)}\
+.rw .badge-ok,.rw .badge-bad{font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;white-space:nowrap}\
+.rw .badge-ok{background:var(--green-soft);color:var(--green)}\
+.rw .badge-bad{background:var(--red-soft);color:var(--red)}";
+  var st2 = document.createElement("style"); st2.textContent = css2; document.head.appendChild(st2);
 
   function replSim(root) {
     root.classList.add("rw");
@@ -180,8 +203,48 @@
     reset();
   }
 
+
+  function quorumSim(root) {
+    root.classList.add("rw");
+    root.innerHTML = '<div class="ctrl"><label>n (replicas) <input type="range" class="n" min="3" max="7" value="3"><output class="on"></output></label>' +
+      '<label>w (write acks) <input type="range" class="w" min="1" max="3" value="2"><output class="ow"></output></label>' +
+      '<label>r (read replies) <input type="range" class="r" min="1" max="3" value="2"><output class="or"></output></label></div>' +
+      '<div class="btns"><button class="primary go">Write v2, then read</button></div><div class="ring"></div><div class="verdict"></div><div class="tiles"></div>';
+    var n = root.querySelector(".n"), w = root.querySelector(".w"), r = root.querySelector(".r"), last = null;
+    function C(a, b) { if (b < 0 || b > a) return 0; var x = 1; for (var i = 1; i <= b; i++) x = x * (a - b + i) / i; return x; }
+    function pick(N, k) { var a = []; for (var i = 0; i < N; i++) a.push(i); for (i = N - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; } return a.slice(0, k); }
+    function sync() {
+      var N = +n.value; w.max = N; r.max = N; if (+w.value > N) w.value = N; if (+r.value > N) r.value = N;
+      root.querySelector(".on").textContent = N; root.querySelector(".ow").textContent = w.value; root.querySelector(".or").textContent = r.value;
+    }
+    function draw() {
+      sync(); var N = +n.value, W = +w.value, R = +r.value;
+      var got = last && last.N === N && last.W === W && last.R === R ? last : null;
+      root.querySelector(".ring").innerHTML = Array.apply(null, Array(N)).map(function (_, i) {
+        var nw = got && got.wrote.indexOf(i) >= 0, rd = got && got.read.indexOf(i) >= 0;
+        return '<div class="rep' + (nw ? " new" : "") + (rd ? " read" : "") + '">replica ' + (i + 1) + "<b>" + (nw ? "v2" : "v1") + "</b>" + (rd ? "read" : "&nbsp;") + "</div>";
+      }).join("");
+      var stale = C(N - W, R) / C(N, R), quorum = W + R > N;
+      var v = "";
+      if (got) {
+        var fresh = got.read.some(function (i) { return got.wrote.indexOf(i) >= 0; });
+        v = fresh ? '<span class="badge-ok">got v2</span><span>At least one replica read had the new write<small>The client takes the highest version it sees, and can write v2 back to the stale ones (read repair).</small></span>'
+          : '<span class="badge-bad">stale read</span><span>None of the replicas read had v2<small>The write succeeded, yet this read returned v1. That can only happen when w + r ≤ n.</small></span>';
+      } else v = '<span>' + (quorum ? "w + r = " + (W + R) + " &gt; n = " + N + ": every read set overlaps every write set." : "w + r = " + (W + R) + " ≤ n = " + N + ": a read can miss every replica that got the write.") + "</span>";
+      root.querySelector(".verdict").innerHTML = v;
+      root.querySelector(".tiles").innerHTML =
+        '<div class="tile"><div class="t">Chance a read is stale</div><div class="v">' + (stale === 0 ? "0%" : (stale * 100).toFixed(stale < 0.1 ? 1 : 0) + "%") + "</div></div>" +
+        '<div class="tile"><div class="t">Writes survive this many down</div><div class="v">' + (N - W) + "</div></div>" +
+        '<div class="tile"><div class="t">Reads survive this many down</div><div class="v">' + (N - R) + "</div></div>";
+    }
+    root.querySelector(".go").addEventListener("click", function () { sync(); var N = +n.value; last = { N: N, W: +w.value, R: +r.value, wrote: pick(N, +w.value), read: pick(N, +r.value) }; draw(); });
+    [n, w, r].forEach(function (e) { e.addEventListener("input", function () { last = null; draw(); }); });
+    draw();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     document.querySelectorAll(".repl-sim").forEach(replSim);
     document.querySelectorAll(".lag-sim").forEach(lagSim);
+    document.querySelectorAll(".quorum-sim").forEach(quorumSim);
   });
 })();

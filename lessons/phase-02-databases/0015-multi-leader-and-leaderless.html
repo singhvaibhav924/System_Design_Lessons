@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Leader and Leaderless</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/replication-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0015</span>
+</nav>
+
+<p class="kicker">Phase 2.3 · Replication (part 3)</p>
+<h1>Many writers: multi-leader and leaderless replication, quorums, and conflicts</h1>
+<p class="subtitle">Letting more than one node accept writes removes the single leader as a bottleneck and point of failure. In exchange, two writes can conflict and nobody decides the order. This lesson covers how Cassandra-style databases cope, and where it breaks.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~25 min</span>
+  <span><b>Main sources</b> DDIA Ch. 5 "Multi-Leader Replication" and "Leaderless Replication" · Alex Xu Ch. 6 "Design a key-value store"</span>
+  <span><b>Roadmap topics</b> multi-leader · conflicts · leaderless · quorums (n, w, r) · sloppy quorum · hinted handoff · version vectors</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain when several leaders make sense, the ways write conflicts get resolved and what each one loses, how <strong>w + r &gt; n</strong> quorums work, why they are
+  <em>not</em> a strong-consistency guarantee, and how version vectors tell "came after" apart from "happened at the same time".
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>Several leaders: when it's worth the trouble</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Multi-Leader Replication", Fig. 5-6 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=190">pp. 168–171</a>
+</aside>
+
+<p>With one leader, if you can't reach it you can't write. <strong>Multi-leader</strong> (also called master–master or active/active) lets several nodes accept writes, and each one also
+follows the others. Within one datacenter "the benefits rarely outweigh the added complexity". The cases where it pays off:</p>
+<ul>
+  <li><strong>Several datacenters</strong>, one leader in each. Writes are handled locally and copied to the others asynchronously. That means lower latency, each datacenter keeps
+  going if another fails, and a shaky link between datacenters doesn't block writes.</li>
+  <li><strong>Clients that work offline</strong>, like the calendar on your phone and laptop. Each device is a "leader" and syncs later; the lag can be days. CouchDB is built for this.</li>
+  <li><strong>Collaborative editing</strong> (Google Docs): every keystroke is applied locally and copied to everyone else.</li>
+</ul>
+<p>The price: the same data can be changed in two places at once. Multi-leader support is also often bolted on, with pitfalls around auto-increment keys, triggers and constraints.
+Kleppmann calls it "dangerous territory that should be avoided if possible."</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>Write conflicts, and the ways to resolve them</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Handling Write Conflicts", Fig. 5-7 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=193">pp. 171–175</a>
+</aside>
+
+<p>User 1 changes a wiki page title from A to B on leader 1. User 2 changes it from A to C on leader 2. Both succeed locally, and the conflict only shows up later, when it's too late
+to ask either user. If each leader applied the writes in the order it received them, one would end with B and the other with C, forever. Every scheme must <strong>converge</strong>:
+all replicas end up with the same value. The options:</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Approach</th><th>How</th><th>Cost</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Avoid conflicts</strong></td><td>Send all writes for a record to the same "home" leader, for example each user's nearest datacenter</td><td>Breaks down when the home changes (datacenter failure, user moves). "Frequently recommended"</td></tr>
+    <tr><td><strong>Last write wins (LWW)</strong></td><td>Highest timestamp or ID wins; the other writes are discarded</td><td>"Dangerously prone to data loss", with clock problems on top (<a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">0006</a>)</td></tr>
+    <tr><td><strong>Merge</strong></td><td>Combine the values (e.g. title "B/C"), or use data types built to merge (<em>CRDTs</em>; Google Docs uses <em>operational transformation</em>)</td><td>Only works where a sensible merge exists</td></tr>
+    <tr><td><strong>Keep both, resolve later</strong></td><td>Store every conflicting version and let application code or the user pick, on write (background handler) or on read (CouchDB)</td><td>Your code must handle multiple versions</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Custom merge logic is easy to get subtly wrong. Amazon's shopping cart kept items <em>added</em> on either side but not items <em>removed</em>, so "customers would sometimes see items
+reappearing in their carts." Conflicts aren't always the same field changed twice, either. Two bookings of the same room made on different leaders conflict too
+(<a href="0010-lost-updates-write-skew-serializability.html">write skew</a>, now across datacenters).</p>
+
+<p>With three or more leaders, the <em>topology</em> matters. Ring and star topologies stall if one node fails. All-to-all is sturdier, but writes can overtake each other: an update
+can arrive before the insert it modifies. That's the causality problem from <a href="0014-replication-lag.html">lesson 0014</a> again, and timestamps can't fix it.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Leaderless: write to many, read from many</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Leaderless Replication", Fig. 5-10 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=199">pp. 177–179</a>;
+  Xu, Ch. 6 —
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=94">pp. 94–96</a>
+</aside>
+
+<p>Amazon's in-house <strong>Dynamo</strong> made a different design popular: <strong>no leader at all</strong>. Its open-source descendants, "Dynamo-style" databases, include
+<strong>Cassandra</strong>, Riak and Voldemort. (Despite the name, AWS's DynamoDB used a different, leader-based design when DDIA was written.) The client, or a coordinator node acting for it,
+sends each write <strong>to all the replicas of that key in parallel</strong> and counts it as successful once enough of them confirm. There is <em>no failover</em>: a down replica simply
+misses some writes.</p>
+
+<p>Reads also go to several replicas, and <strong>version numbers</strong> show which answer is newest. Missed writes are repaired in two ways:</p>
+<ul>
+  <li><strong>Read repair:</strong> when a read finds a stale replica, the client writes the newer value back to it. Good for keys that are read often.</li>
+  <li><strong>Anti-entropy:</strong> a background process compares replicas and copies what's missing, in no particular order. Xu adds the usual trick: compare
+  <span class="term" data-tip="A tree of hashes: each leaf is the hash of a range of keys, each parent the hash of its children. If two replicas' root hashes match, their data matches; if not, walk down to find just the ranges that differ.">Merkle trees</span>
+  so only the ranges that differ are transferred. Without anti-entropy, rarely read values can stay stale indefinitely.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Quorums: w + r &gt; n</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Quorums for reading and writing", Fig. 5-11 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=201">pp. 179–181</a>
+</aside>
+
+<p>Each key lives on <strong>n</strong> replicas. A write counts once <strong>w</strong> of them confirm. A read waits for <strong>r</strong> replies and keeps the newest version. If
+<strong>w + r &gt; n</strong>, the replicas you read from must overlap the replicas that took the write, so at least one of them has the latest value. A common setup is odd n
+(3 or 5) with w = r = majority: n = 3, w = r = 2 tolerates one node down; n = 5, w = r = 3 tolerates two. Requests always go to all n; w and r only decide <em>how many replies you
+wait for</em>.</p>
+
+<div class="figure wide">
+  <div class="quorum-sim"></div>
+  <div class="caption">The simulator freezes the moment just after a write: only w replicas have v2 so far (the rest will get it later via replication, read repair or anti-entropy). A read
+  asks r random replicas. "Chance a read is stale" is exact for that moment. Try n = 3, w = 1, r = 1 (fast, often stale), n = 3, w = r = 2, and n = 5, w = 5, r = 1 (fast reads, but
+  one dead node blocks all writes).</div>
+</div>
+
+<p>Xu's tuning shortcuts: w = n and r = 1 for fast reads; w = 1 and r = n for fast writes; w + r ≤ n for speed and availability at the cost of stale reads. Under the hood, Cassandra's
+"consistency levels" (ONE, QUORUM, ALL) are this same choice made per request.</p>
+
+<div class="callout trap">
+  <span class="label">Where the books disagree, and DDIA is right</span>
+  <p>Xu writes that "if W + R &gt; N, strong consistency is guaranteed" (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=95">p. 95</a>). Kleppmann lists the
+  edge cases where stale values still come back: <strong>sloppy quorums</strong> (below); <strong>concurrent writes</strong> resolved by LWW (one is silently lost); a write
+  <strong>concurrent with a read</strong>; a write that reached fewer than w replicas, is reported as failed, but is <strong>not rolled back</strong> on the replicas it reached; and a
+  replica restored from a stale copy. His conclusion: w and r "adjust the probability of stale values being read, but it's wise to not take them as absolute guarantees." You also don't
+  get read-your-writes or monotonic reads. In an interview, say "quorums make reads <em>usually</em> fresh", not "strongly consistent".</p>
+</div>
+
+<h3>Sloppy quorums and hinted handoff</h3>
+<aside class="side">
+  <span class="src">DDIA, "Sloppy Quorums and Hinted Handoff" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=205">pp. 183–184</a>;
+  Xu, "Handling temporary failures" —
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=101">p. 101</a>
+</aside>
+<p>If a network problem cuts a client off from a key's home replicas, should writes fail? A <strong>sloppy quorum</strong> accepts them on other reachable nodes instead, like sleeping on a
+neighbour's couch when you're locked out. Once the network heals, those nodes pass the writes back to the home replicas: <strong>hinted handoff</strong>. This improves write availability,
+but it "isn't a quorum at all in the traditional sense", because a read of r home replicas may not see the write yet. In DDIA's time, Riak enabled it by default, while Cassandra and Voldemort
+didn't.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Concurrent writes: "after" or "at the same time"?</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Detecting Concurrent Writes", Figs. 5-12 to 5-14 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=206">pp. 184–191</a>
+</aside>
+
+<p>Leaderless systems get conflicts even with strict quorums: two clients write the same key, and different replicas receive the writes in different orders. The two fixes:</p>
+
+<p><strong>Last write wins</strong> keeps the highest timestamp and drops the rest. It was "the only supported conflict resolution method in Cassandra". It converges, but concurrent writes
+that were all reported as successful are "silently discarded". Kleppmann's safe pattern: make keys <strong>write-once</strong> (e.g. a UUID key per event), so updates never compete.</p>
+
+<p><strong>Track causality.</strong> Operation A <em>happens before</em> B if B knew about A or built on it. Two operations are <strong>concurrent</strong> if neither knew about the other,
+whatever the clock said. If one happened before the other, the later one may overwrite; if they're concurrent, both must be kept. In DDIA's shopping-cart example, the server gives each key a
+<strong>version number</strong>. A client must send back the version it last read, and the server overwrites only what that client had seen. Concurrent values are kept side by side as
+<strong>siblings</strong>, and the client merges them, for example as the union of both carts, with <em>tombstones</em> so removed items don't come back.</p>
+
+<p>With several replicas, one counter isn't enough. Each replica keeps its own counter, and the set of counters is a <strong>version vector</strong>. Xu's worked example (he calls it a vector
+clock):</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Version</th><th>Vector</th><th>Relation</th></tr></thead>
+  <tbody>
+    <tr><td>D2</td><td><code>[Sx:2]</code></td><td>Written twice via server Sx</td></tr>
+    <tr><td>D3</td><td><code>[Sx:2, Sy:1]</code></td><td>Built on D2, written via Sy</td></tr>
+    <tr><td>D4</td><td><code>[Sx:2, Sz:1]</code></td><td>Also built on D2, via Sz. <strong>Concurrent with D3</strong>: each is ahead in one counter</td></tr>
+    <tr><td>D5</td><td><code>[Sx:3, Sy:1, Sz:1]</code></td><td>A client merged D3 + D4. ≥ both in every counter, so it supersedes both</td></tr>
+  </tbody>
+</table>
+</div>
+<p>The rule: X came before Y if every counter in Y is ≥ the matching counter in X. If each is bigger somewhere, they're concurrent siblings. No clocks are involved. (Xu,
+<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=97">pp. 97–99</a>.)</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>An online feature store on Cassandra where one pipeline overwrites "latest features for user X" is a fine fit for LWW: there's one writer per key, and losing a superseded value is
+  harmless. A per-user counter updated by several services at once is not: concurrent increments get dropped. Use the database's counter type, a mergeable data type, or route each key to one
+  writer. And remember that a quorum read right after a write isn't a promise you'll see that write.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>The three approaches side by side</h2>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th></th><th>Single-leader (0013)</th><th>Multi-leader</th><th>Leaderless (Dynamo-style)</th></tr></thead>
+  <tbody>
+    <tr><td>Who accepts writes</td><td>One leader</td><td>One leader per datacenter or device</td><td>Any replica; client waits for w</td></tr>
+    <tr><td>Write order</td><td>Defined by the leader</td><td>None across leaders</td><td>None</td></tr>
+    <tr><td>Conflicts</td><td>None</td><td>Yes: avoid, LWW, merge, or keep siblings</td><td>Yes: LWW or version vectors + siblings</td></tr>
+    <tr><td>Node failure</td><td>Failover (risky)</td><td>Other datacenters carry on</td><td>No failover; quorums tolerate n − w / n − r down</td></tr>
+    <tr><td>Examples</td><td>PostgreSQL, MySQL, MongoDB, Kafka</td><td>CouchDB, multi-region add-ons (BDR, GoldenGate)</td><td>Cassandra, Riak, Voldemort</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>The page in five lines</h2>
+
+<ol>
+  <li>Multi-leader suits multiple datacenters, offline clients and collaborative editing. The price is write conflicts. Avoid it when you can.</li>
+  <li>Conflict fixes: route each record to one home leader; LWW (loses data); merge (CRDTs, operational transformation); keep siblings for the app to resolve.</li>
+  <li>Leaderless: write to all n, wait for w; read r, take the newest; read repair and anti-entropy (Merkle trees) fill gaps. No failover.</li>
+  <li><strong>w + r &gt; n</strong> means read and write sets overlap, so reads are <em>usually</em> fresh, but edge cases (sloppy quorums, LWW, partial writes) mean it's not a guarantee.</li>
+  <li>Concurrent = neither knew of the other. Version vectors detect it without clocks; LWW just drops one. Write-once keys make LWW safe.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">With n = 5, which w and r give overlapping read and write sets?</p>
+      <div class="opts">
+        <button>w = 2 and r = 2</button>
+        <button>w = 3 and r = 3</button>
+        <button>w = 1 and r = 3</button>
+        <button>w = 2 and r = 3</button>
+      </div>
+      <p class="why">Overlap needs w + r &gt; n. Only 3 + 3 = 6 is greater than 5.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">Two clients write the same key at the same moment, and the store uses last write wins. What happens?</p>
+      <div class="opts">
+        <button>both writes are kept as siblings for merging</button>
+        <button>the second client receives an error and retries</button>
+        <button>the database merges both values into one record</button>
+        <button>one write is silently discarded despite reporting success</button>
+      </div>
+      <p class="why">LWW converges by throwing away every write except the one with the highest timestamp, even though all were acknowledged.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Version vectors <code>[A:2, B:1]</code> and <code>[A:1, B:2]</code>. How are they related?</p>
+      <div class="opts">
+        <button>concurrent: each is ahead in one counter</button>
+        <button>the first came after the second one</button>
+        <button>the second came after the first one</button>
+        <button>identical versions written on two different replicas</button>
+      </div>
+      <p class="why">Neither is ≥ the other in every counter, so neither knew about the other. Keep both as siblings.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">What does a sloppy quorum trade away?</p>
+      <div class="opts">
+        <button>write availability whenever the network is badly partitioned</button>
+        <button>durability, since the writes may be stored nowhere</button>
+        <button>the guarantee a quorum read sees the write</button>
+        <button>the ability to tolerate any single node failure</button>
+      </div>
+      <p class="why">Writes land on stand-in nodes outside the key's home replicas, so reading r home replicas may miss them until hinted handoff completes.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">When does multi-leader replication make the most sense?</p>
+      <div class="opts">
+        <button>a single datacenter that needs more write throughput</button>
+        <button>several datacenters, each writing locally for low latency</button>
+        <button>a bank ledger that must never see conflicts</button>
+        <button>any system that wants to avoid needing replicas</button>
+      </div>
+      <p class="why">Local writes per datacenter (and offline devices) are the main win. Within one datacenter the conflicts aren't worth it.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 5, "Multi-Leader Replication" and "Leaderless Replication"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=190">pp. 168–192</a>).
+      "Limitations of Quorum Consistency" (pp. 181–183) is the part most people get wrong.</li>
+    <li>Then: <strong>Xu, Ch. 6, "Consistency" through "Handling failures"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=95">pp. 95–103</a>) for the interview version with vector clocks, gossip, hinted handoff and
+      Merkle trees. Read it with the warning above in mind.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/replication.html">Replication cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0014-replication-lag.html">← 0014 · Replication lag</a>
+  <span class="disabled">Next: 0016 · Sharding (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
