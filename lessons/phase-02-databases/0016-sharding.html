@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sharding</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/shard-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0016</span>
+</nav>
+
+<p class="kicker">Phase 2.3 · Sharding</p>
+<h1>Sharding: splitting data across machines without creating hot spots</h1>
+<p class="subtitle">Replication copies everything everywhere. Once the data or the write rate outgrows one machine, you have to split it. This lesson covers how to choose the split, what it does to your indexes and queries, and how to add machines later without moving everything.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~25 min</span>
+  <span><b>Main sources</b> DDIA Ch. 6 "Partitioning" · Alex Xu Ch. 1 "Database scaling"</span>
+  <span><b>Roadmap topics</b> horizontal &amp; vertical partitioning · shard keys · range vs hash · hot partitions · rebalancing · routing · cross-shard queries</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Pick a shard key and defend it. Say where hot spots will appear and how you'd relieve them. Explain what sharding costs for secondary indexes, joins and transactions, and why
+  <code>hash(key) % N</code> is the wrong way to assign shards.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>What sharding is, and when to reach for it</h2>
+
+<aside class="side">
+  <span class="src">DDIA, Ch. 6 introduction and "Partitioning and Replication", Fig. 6-1 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=221">pp. 199–201</a>;
+  Xu, "Database scaling" —
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=28">pp. 28–30</a>
+</aside>
+
+<p><strong>Partitioning</strong>, usually called <strong>sharding</strong>, breaks a dataset into pieces so that each record belongs to exactly one piece. Each piece is a small database
+of its own, and different pieces live on different machines. The names vary by product: <em>shard</em> in MongoDB and Elasticsearch, <em>region</em> in HBase, <em>tablet</em> in
+Bigtable, <em>vnode</em> in Cassandra. The reason is <strong>scalability</strong>: more disks for the data and more processors for the queries. It's combined with replication
+(<a href="0013-replication-leaders-followers-failover.html">0013</a>), so each partition has a leader and followers, and one machine can be leader for some partitions and follower
+for others.</p>
+
+<p>Shard last, not first. Xu: scaling up still goes a long way. You can rent a database server with 24 TB of RAM, and in 2013 Stack Overflow served over 10 million monthly
+visitors from one primary database. Sharding is horizontal partitioning (splitting the <em>rows</em>). Its simpler cousin, <strong>vertical partitioning</strong>, splits by
+<em>table or feature</em> instead: users in one database, analytics events in another. Teams usually do that first.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>The shard key: key ranges, hashes, or both</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Partitioning of Key-Value Data", Figs. 6-2, 6-3 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=223">pp. 201–205</a>
+</aside>
+
+<p>The goal is an even spread of data <em>and</em> load. If 10 nodes share the load fairly, you get 10× the throughput. If one partition gets most of the load
+(<strong>skew</strong>), it becomes a <strong>hot spot</strong> and the other nine machines sit idle. Placing records randomly would spread them evenly, but then you'd have to ask every
+node to find anything. Instead the <strong>shard key</strong> decides where a record lives. Xu: choosing it is "the most important factor".</p>
+
+<ul>
+  <li><strong>Key range</strong>: each partition owns a continuous range, like encyclopedia volumes (A–B, C–D…). Keys stay sorted, so <strong>range scans are cheap</strong>.
+  Boundaries follow the data, not the alphabet. Used by Bigtable, HBase, and MongoDB before 2.4.</li>
+  <li><strong>Hash of key</strong>: each partition owns a range of <em>hash values</em>. Similar keys get scattered, so load spreads well, but <strong>range queries must ask every
+  partition</strong>. Use a stable hash such as MD5 (Cassandra, MongoDB). Kleppmann warns that Java's <code>hashCode()</code> can differ between processes.</li>
+  <li><strong>Compound key</strong> (Cassandra): hash the <em>first</em> part to choose the partition, and sort by the rest inside it. A key of <code>(user_id, timestamp)</code> spreads
+  users across machines, and "this user's posts last week" is still one range scan. That's the equality-then-range rule from <a href="0008-indexes-in-practice.html">lesson 0008</a>, now
+  at the scale of a cluster.</li>
+</ul>
+
+<div class="figure wide">
+  <div class="partition-scheme"></div>
+  <div class="caption">DDIA's sensor example (p. 203): readings keyed by timestamp. Four partitions, 20 active sensors, one minute of writes. Switch the key and compare where writes land with what a
+  "readings for March" query has to touch.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Hot keys: the celebrity problem</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Skewed Workloads and Relieving Hot Spots" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=227">p. 205</a>;
+  Xu, "Celebrity problem" —
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=30">p. 30</a>
+</aside>
+
+<p>Hashing spreads <em>keys</em>, but not load on a <em>single</em> key. When a celebrity posts, millions of requests hit one user ID, and "the hash of two identical IDs is still the
+same." Xu's version: if Katy Perry, Justin Bieber and Lady Gaga all hash to one shard, that shard melts. Most databases can't fix this automatically, so it's on the application:</p>
+<ul>
+  <li><strong>Split the hot key.</strong> Append a random two-digit number, so <code>post:42</code> becomes <code>post:42:07</code>. Writes spread over 100 keys and 100 partitions. Reads
+  must now fetch all 100 and combine them, and you must track <em>which</em> keys are split, since doing it for every key would be pure overhead.</li>
+  <li><strong>Give the hottest keys their own shards</strong> (Xu), possibly split further.</li>
+</ul>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>A feature store sharded by <code>entity_id</code> works until one entity is a giant: the marketplace's biggest seller, or a bot account sending a million events an hour. Its partition
+  runs hot for both writes and lookups. The fix is the same: split its counters across sub-keys and sum them on read, and cache its features. A "trending items" query that looks at
+  every item is a scatter/gather across all shards; that's the next section.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Secondary indexes across shards: local or global</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Partitioning and Secondary Indexes", Figs. 6-4, 6-5 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=228">pp. 206–209</a>
+</aside>
+
+<p>Sharding by <code>car_id</code> works for "get car 783". But "find red cars" uses a secondary index on colour, and red cars live on every shard. Two designs:</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th></th><th>Local index (by document)</th><th>Global index (by term)</th></tr></thead>
+  <tbody>
+    <tr><td>What each shard indexes</td><td>Only its own records</td><td>A slice of the <em>terms</em> for all records (e.g. colours a–r on shard 0)</td></tr>
+    <tr><td>Write</td><td><strong>One shard</strong>: simple</td><td>May touch several index shards, so updates are usually <strong>asynchronous</strong> (DynamoDB: "within a fraction of a second" normally)</td></tr>
+    <tr><td>Read "red cars"</td><td>Ask <strong>every shard</strong> and merge (<em>scatter/gather</em>)</td><td>Ask <strong>one</strong> index shard</td></tr>
+    <tr><td>Used by</td><td>MongoDB, Cassandra, Elasticsearch, Riak, SolrCloud</td><td>DynamoDB global secondary indexes, Riak search</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Scatter/gather is "prone to tail latency amplification". That's the fan-out maths from <a href="../phase-01-vocabulary/0002-latency-throughput-percentiles.html">lesson 0002</a>: the query is
+as slow as the slowest of N shards. Vendors therefore advise choosing the shard key so that common queries hit <em>one</em> shard.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>Rebalancing: adding machines without moving everything</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Rebalancing Partitions", Fig. 6-6 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=231">pp. 209–214</a>
+</aside>
+
+<p>Data grows, load grows and machines die, so partitions must move. A good scheme shares the load fairly afterwards, stays online during the move, and moves "no more data than
+necessary". The obvious approach fails the last test:</p>
+
+<div class="figure wide">
+  <div class="rehash-sim"></div>
+  <div class="caption">Kleppmann's example: <code>hash = 123456</code> lives on node 6 with 10 nodes, node 3 with 11, node 0 with 12. Every resize reshuffles almost everything.</div>
+</div>
+
+<div class="callout trap">
+  <span class="label">Where the books disagree</span>
+  <p>Xu's first sharding example assigns users with <code>user_id % 4</code> (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=28">p. 28</a>). It's fine as a picture,
+  but Kleppmann's section heading for it is "How not to do it: hash mod N". Xu agrees later on: "resharding" is listed as a problem, and his fix is consistent hashing (next lesson).
+  In an interview, never leave <code>% N</code> as your final answer.</p>
+</div>
+
+<p>The approaches that work:</p>
+<ul>
+  <li><strong>Fixed number of partitions</strong>, many more than nodes (e.g. 1,000 partitions on 10 nodes). A new node <em>takes whole partitions</em> from the others. The key-to-partition
+  mapping never changes; only partition-to-node does. Riak, Elasticsearch and Couchbase work this way. The catch: the count is fixed at setup and caps your cluster size. Too few partitions
+  and they get huge; too many and the overhead adds up.</li>
+  <li><strong>Dynamic partitioning</strong>: split a partition when it grows too big (HBase's default is 10 GB) and merge small ones, like B-tree page splits (<a href="0007-storage-engines-lsm-and-btrees.html">0007</a>).
+  It adapts to the data size, but an empty database starts as <em>one</em> partition on one node, so HBase and MongoDB let you <em>pre-split</em>.</li>
+  <li><strong>Fixed partitions per node</strong> (Cassandra, 256 per node by default): a new node splits some existing partitions at random points and takes half of each. This is closest
+  to the original consistent hashing <span class="badge later">0017</span>.</li>
+</ul>
+
+<p><strong>Automatic or manual?</strong> Fully automatic rebalancing is convenient but risky. If an overloaded node is wrongly declared dead, moving its data away adds <em>more</em> load
+and can cascade (the false-death problem from <a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">0006</a>). Couchbase, Riak and Voldemort propose a new assignment and
+wait for a human to approve it.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>Request routing: which node has key "foo"?</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Request Routing", Figs. 6-7, 6-8 —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=236">pp. 214–216</a>
+</aside>
+
+<p>Partitions move, so <em>someone</em> must always know where each one lives. Three placements for that knowledge: (1) <strong>any node</strong> accepts the request and forwards it;
+(2) a <strong>routing tier</strong> forwards requests, acting as a partition-aware load balancer; (3) <strong>smart clients</strong> connect straight to the right node. Whichever does the
+routing must learn about changes reliably:</p>
+<ul>
+  <li>A <strong>coordination service</strong> holds the authoritative partition-to-node map and notifies subscribers. HBase, SolrCloud and Kafka used ZooKeeper; MongoDB has config servers plus
+  <code>mongos</code> routers. <span class="badge later">Phase 5 · ZooKeeper / etcd</span></li>
+  <li><strong>Gossip</strong> between the nodes themselves (Cassandra, Riak): no external service, and any node can forward. This is the
+  <a href="../../glossary.md">gossip protocol</a> you asked about.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>What sharding costs: joins and transactions</h2>
+
+<aside class="side">
+  <span class="src">Xu, "Join and de-normalization" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=30">p. 30</a>;
+  DDIA, "Parallel Query Execution" —
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=238">p. 216</a>
+</aside>
+
+<p>Each partition "operates mostly independently", and that independence is why sharding scales. Anything that crosses shards loses it:</p>
+<ul>
+  <li><strong>Cross-shard joins</strong> are hard. Xu's workaround is to denormalize (<a href="0011-data-models-sql-vs-nosql.html">0011</a>) so each query reads one table on one shard.
+  Analytics warehouses do distribute big joins across nodes (parallel query execution) <span class="badge later">Phase 12</span>.</li>
+  <li><strong>Cross-shard transactions</strong> need coordination between shards, typically two-phase commit, which is slow and fragile <span class="badge later">Phase 5</span>. Recall VoltDB in
+  <a href="0010-lost-updates-write-skew-serializability.html">lesson 0010</a>: single-partition transactions scale with cores, while cross-partition ones were stuck around 1,000 per second.</li>
+  <li><strong>Global secondary indexes</strong> are asynchronous, so a just-written record may not be findable yet (section 04).</li>
+</ul>
+
+<div class="callout key">
+  <span class="label">The shard-key rule of thumb</span>
+  <p>Choose the key that your <strong>most frequent queries and transactions</strong> already filter on (user, tenant, entity), so they stay on one shard. Check it for <strong>hot keys</strong> and
+  <strong>time-ordered writes</strong>. Accept scatter/gather only for rare queries.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">08</span>The page in five lines</h2>
+
+<ol>
+  <li>Shard only when one well-replicated node can't hold the data or the writes. Vertical partitioning (by table or feature) usually comes first.</li>
+  <li><strong>Key range</strong>: cheap range scans, but time-ordered keys create hot spots. <strong>Hash</strong>: even load, no range scans. <strong>Compound</strong>: hash the first part, sort the rest.</li>
+  <li>Hot keys survive hashing. Split them with random suffixes (and read all the pieces), or give them their own shards.</li>
+  <li>Secondary indexes: <strong>local</strong> means one-shard writes and scatter/gather reads (tail latency). <strong>Global</strong> means one-shard reads and slower, async writes.</li>
+  <li>Never <code>hash % N</code>. Use fixed partitions, dynamic splits or partitions per node, plus routing via a coordination service or gossip. Cross-shard joins and transactions are the price.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">Sensor readings are key-range partitioned by timestamp. What goes wrong?</p>
+      <div class="opts">
+        <button>range queries for one month must hit every partition</button>
+        <button>the hash function scatters neighbouring readings across all partitions</button>
+        <button>all current writes land on the partition holding today</button>
+        <button>the secondary indexes become global and then update asynchronously</button>
+      </div>
+      <p class="why">New readings all have "now" timestamps, so one partition takes every write. Prefix the key with the sensor ID to spread them.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">You grow from 4 to 5 nodes using <code>hash(key) % N</code>. Roughly how much data moves?</p>
+      <div class="opts">
+        <button>about eighty percent of all the keys</button>
+        <button>about twenty percent of all the keys</button>
+        <button>only keys stored on the busiest node</button>
+        <button>none, because the hashes never ever change</button>
+      </div>
+      <p class="why">About N/(N+1) of keys change node with mod N. Fixed partitions would move only about 1/(N+1), around 20%.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">One celebrity's post gets millions of writes. Why doesn't hash partitioning help?</p>
+      <div class="opts">
+        <button>hash partitioning supports only reads but not writes</button>
+        <button>the hash function is too slow under load</button>
+        <button>celebrity accounts always live on the leader node</button>
+        <button>every request shares one key and one hash</button>
+      </div>
+      <p class="why">Hashing spreads different keys. One very hot key still maps to one partition. Split it with random suffixes.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A query filters on a field with a local (document-partitioned) secondary index. What does the database do?</p>
+      <div class="opts">
+        <button>reads one index shard that holds that term</button>
+        <button>asks every shard and merges their partial results</button>
+        <button>rebuilds a global index before running the query</button>
+        <button>rejects queries since the field isn't the key</button>
+      </div>
+      <p class="why">Each shard only indexes its own records, so the query is scattered to all shards and gathered, which amplifies tail latency.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">What's the best shard key for a multi-tenant SaaS app whose queries are almost all within one tenant?</p>
+      <div class="opts">
+        <button>the creation timestamp of each new row</button>
+        <button>a random UUID generated for every row</button>
+        <button>the tenant ID, with hot tenants watched</button>
+        <button>the auto-increment primary key of each row</button>
+      </div>
+      <p class="why">Most queries and transactions then stay on one shard. Watch for giant tenants, which are this app's hot keys.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Kleppmann, <em>DDIA</em>, Ch. 6, "Partitioning"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=221">pp. 199–217</a>). The whole chapter is short and has no filler.</li>
+    <li>Then: <strong>Xu, Ch. 1, "Database scaling"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=28">pp. 28–30</a>) for the interview framing: sharding key, resharding, celebrity problem, joins.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/sharding.html">Sharding cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0015-multi-leader-and-leaderless.html">← 0015 · Multi-leader &amp; leaderless</a>
+  <span class="disabled">Next: 0017 · Consistent hashing (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

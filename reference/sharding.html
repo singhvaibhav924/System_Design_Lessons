@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sharding</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/course.js"></script>
+<style>
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; font-size: 16px; break-inside: avoid; }
+  .card h3 { margin: 0 0 6px; }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin: 0; }
+  .card .from { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main class="page">
+<nav class="crumbs"><a href="../index.html">Course index</a> <span>/</span> <span>Reference</span></nav>
+
+<p class="kicker">Reference · Phase 2 (sharding)</p>
+<h1>Sharding</h1>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0016-sharding.html">Lesson 0016</a>. Lesson 0017 will add consistent hashing. Sources: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=221">DDIA Ch. 6</a>, Xu Ch. 1.</p>
+
+<div class="card-grid wide">
+  <div class="card"><h3>Sharding = partitioning</h3><p>Each record in exactly one partition (shard / region / tablet / vnode), partitions on different nodes, each replicated. Scales data and load. Shard last: scale up and partition vertically (by feature) first.</p><p class="from">DDIA pp. 199–201 · Xu p. 28</p></div>
+  <div class="card"><h3>Skew & hot spots</h3><p>Goal: even data and load. Skew → one hot partition, idle rest. Random placement is even but unfindable.</p><p class="from">DDIA p. 201</p></div>
+  <div class="card"><h3>Key range</h3><p>Sorted ranges (encyclopedia). Cheap range scans. Time-ordered keys → all writes on newest partition. Prefix with e.g. sensor ID. Bigtable, HBase.</p><p class="from">DDIA pp. 202–203</p></div>
+  <div class="card"><h3>Hash of key</h3><p>Partitions own hash ranges. Even spread, range queries hit all partitions. Stable hash (MD5), not language hashCode().</p><p class="from">DDIA pp. 203–204</p></div>
+  <div class="card"><h3>Compound key</h3><p>Cassandra: hash first column for partition, sort by the rest. (user_id, ts): users spread, one user's time range = one scan.</p><p class="from">DDIA pp. 204–205</p></div>
+  <div class="card"><h3>Hot keys (celebrity)</h3><p>Hashing can't split one key. Append random 2-digit suffix → 100 keys; reads fan out; track split keys. Or dedicated shards.</p><p class="from">DDIA p. 205 · Xu p. 30</p></div>
+  <div class="card"><h3>Secondary indexes</h3><p><b>Local</b> (by document): 1-shard writes, scatter/gather reads (tail latency) — MongoDB, Cassandra, ES. <b>Global</b> (by term): 1-shard reads, multi-shard async writes — DynamoDB GSI.</p><p class="from">DDIA pp. 206–209</p></div>
+  <div class="card"><h3>Rebalancing</h3><p>Never hash % N (moves ~N/(N+1) of keys). Fixed many partitions per cluster (Riak, ES) · dynamic split/merge (HBase 10 GB, pre-split) · fixed partitions per node (Cassandra 256). Prefer human-approved moves.</p><p class="from">DDIA pp. 209–214</p></div>
+  <div class="card"><h3>Request routing</h3><p>Any node forwards · routing tier · partition-aware client. Learn assignments via coordination service (ZooKeeper; MongoDB config servers + mongos) or gossip (Cassandra, Riak).</p><p class="from">DDIA pp. 214–216</p></div>
+  <div class="card"><h3>Costs</h3><p>Cross-shard joins → denormalize (Xu). Cross-shard transactions → 2PC (Phase 5), slow. Global indexes lag. Rule: shard by what most queries/transactions filter on; check hot keys and time-ordered writes.</p><p class="from">Xu p. 30 · DDIA p. 216</p></div>
+</div>
+</main>
+</body>
+</html>
