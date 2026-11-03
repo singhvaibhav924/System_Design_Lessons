@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 2 Wrap-up: Key-Value Store</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/kv-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0018</span>
+</nav>
+
+<p class="kicker">Phase 2 · Wrap-up lecture</p>
+<h1>Putting Phase 2 together: how a distributed key-value store is designed</h1>
+<p class="subtitle">Alex Xu's "design a key-value store" chapter uses almost every idea from the last eleven lessons. This lecture walks through it piece by piece, links each piece to the lesson that explained it, and marks where the book simplifies.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~20 min</span>
+  <span><b>Main source</b> Alex Xu Ch. 6 "Design a Key-Value Store" (based on Dynamo and Cassandra), cross-checked with DDIA Chs. 3, 5, 6</span>
+  <span><b>Covers</b> lessons 0007–0017</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Explain a Dynamo/Cassandra-style key-value store end to end, from the hash ring to the bytes on disk, and say <em>why</em> each part is there and what it gives up. You'll also have a
+  checklist for reviewing any data-layer design, including one proposed by a coding agent.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>The brief</h2>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 6, "Understand the problem and establish design scope" —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=87">pp. 87–89</a>
+</aside>
+
+<p>Support <code>put(key, value)</code> and <code>get(key)</code>, with small values (&lt; 10 KB), a large dataset, high availability ("responds quickly, even during failures"), automatic scaling,
+<strong>tunable consistency</strong> and low latency. One machine with an in-memory hash table (plus compression and spilling cold data to disk) fills up "very quickly", so the data has to be
+spread over many machines. Xu also calls this a distributed hash table. Notice how much that brief already decides: availability over strict consistency, a key-only access pattern (so no
+joins or secondary indexes), and growth by adding machines.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>The first fork: consistency or availability</h2>
+
+<aside class="side">
+  <span class="src">Xu, "CAP theorem", Figs. 6-1 to 6-3 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=90">pp. 90–92</a>
+</aside>
+
+<p>Xu frames it with CAP. When a replica is cut off, either block writes until the replicas agree (<em>CP</em>, as a bank would) or keep accepting reads and writes and reconcile later
+(<em>AP</em>). For this brief he picks AP and eventual consistency, like Dynamo and Cassandra. That's the right call. Read it with <a href="../phase-01-vocabulary/0004-cap-theorem-and-pacelc.html">lesson 0004</a>
+in mind, though: "pick two of three" and "CA systems" are a loose way to put it. The real choice is <em>what to do during a partition</em>, and PACELC adds the everyday trade-off between latency and
+consistency, which is exactly what tunable w and r control.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Every piece, and the lesson that explained it</h2>
+
+<aside class="side">
+  <span class="src">Xu, Table 6-2 (summary) —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=108">p. 108</a>, expanded with DDIA's caveats
+</aside>
+
+<p>Xu's summary table, one row per problem, with the lesson where we covered it and what to add from DDIA:</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Problem</th><th>Technique</th><th>Lesson</th><th>What to add</th></tr></thead>
+  <tbody>
+    <tr><td>Store big data; split it; scale up and down step by step</td><td>Consistent hashing with virtual nodes</td><td><a href="0017-consistent-hashing.html">0017</a>, <a href="0016-sharding.html">0016</a></td><td>Moves about 1/N of keys. Does not fix a single hot key. DDIA calls it hash partitioning.</td></tr>
+    <tr><td>Machines of different sizes</td><td>More virtual nodes for bigger servers</td><td><a href="0017-consistent-hashing.html">0017</a></td><td>More metadata to keep in sync.</td></tr>
+    <tr><td>Highly available reads</td><td>Replicate to the next n distinct servers clockwise, across datacenters</td><td><a href="0013-replication-leaders-followers-failover.html">0013</a>, <a href="0017-consistent-hashing.html">0017</a></td><td>No leader, so no failover, but no single write order either.</td></tr>
+    <tr><td>Tunable consistency</td><td>Quorums: n, w, r</td><td><a href="0015-multi-leader-and-leaderless.html">0015</a></td><td>w + r &gt; n makes reads <em>usually</em> fresh, not "strongly consistent" as Xu says.</td></tr>
+    <tr><td>Highly available writes (concurrent updates)</td><td>Versioning with vector clocks; the client reconciles</td><td><a href="0015-multi-leader-and-leaderless.html">0015</a></td><td>Adds work for clients. Cassandra uses last-write-wins instead and loses concurrent writes.</td></tr>
+    <tr><td>Failure detection</td><td>Gossip with heartbeat counters</td><td><a href="../phase-01-vocabulary/0006-clocks-pauses-and-majorities.html">0006</a>, <a href="../../glossary.md">glossary</a></td><td>"Down" is each node's own judgement, and timeouts can be wrong.</td></tr>
+    <tr><td>Temporary failures</td><td>Sloppy quorum + hinted handoff</td><td><a href="0015-multi-leader-and-leaderless.html">0015</a></td><td>Better write availability; quorum reads may miss the write.</td></tr>
+    <tr><td>Permanent failures</td><td>Anti-entropy with Merkle trees</td><td><a href="0015-multi-leader-and-leaderless.html">0015</a></td><td>Transfers only the ranges that differ.</td></tr>
+    <tr><td>Datacenter outage</td><td>Replicate across datacenters</td><td><a href="0015-multi-leader-and-leaderless.html">0015</a></td><td>Usually acknowledge from the local datacenter and copy to the others asynchronously.</td></tr>
+    <tr><td>Fast writes and reads on each node</td><td>Commit log → memtable → SSTables; Bloom filters on reads</td><td><a href="0007-storage-engines-lsm-and-btrees.html">0007</a></td><td>Compaction can hurt p99 and fall behind under heavy writes.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>One request, end to end</h2>
+
+<aside class="side">
+  <span class="src">Xu, "System architecture diagram", "Write path", "Read path", Figs. 6-17 to 6-21 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=104">pp. 104–107</a>
+</aside>
+
+<p>The architecture is <strong>fully decentralized</strong>: any node can act as the <strong>coordinator</strong> for a request, every node has the same responsibilities, and there's no single point
+of failure. A put is hashed onto the ring, sent to the key's n replicas, written to each replica's commit log and memtable, and acknowledged once w replicas confirm. A get asks the replicas, waits for r
+answers, returns the newest version and repairs any stale copy. Trace it:</p>
+
+<div class="figure wide">
+  <div class="kv-trace"></div>
+  <div class="caption">Six servers, n = 3. Things to see: (1) put, take s2 down, put again: s5 holds s2's copy with a hint. Bring s2 back: hinted handoff. (2) Reset, untick sloppy quorum, set r = 1, then put,
+  take s2 down, put, bring s2 back, get: a stale read, because w + r = n. (3) Put and get on other keys: each key has its own three replicas.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>What this design is not good at</h2>
+
+<p>Knowing the limits matters as much as knowing the parts. This design deliberately gives up:</p>
+<ul>
+  <li><strong>Queries other than by key.</strong> No joins and no ad-hoc filters. Secondary indexes on a sharded store mean scatter/gather or lagging global indexes (<a href="0016-sharding.html">0016</a>).</li>
+  <li><strong>Transactions across keys.</strong> There's no isolation level here at all (<a href="0009-transactions-acid-and-snapshot-isolation.html">0009</a>, <a href="0010-lost-updates-write-skew-serializability.html">0010</a>).
+  "Check the balance, then spend" across two keys is write skew waiting to happen.</li>
+  <li><strong>Read-your-writes and monotonic reads</strong> aren't guaranteed (<a href="0014-replication-lag.html">0014</a>). The application has to add them if it needs them.</li>
+  <li><strong>Counters and read-modify-write</strong> under concurrent writers: last-write-wins drops updates, and vector clocks push the merging onto the client.</li>
+</ul>
+<p>That's why the same company usually also runs a relational database (<a href="0011-data-models-sql-vs-nosql.html">0011</a>), and why "Cassandra for everything" is as wrong as "Postgres for everything".</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>This is the architecture behind many <strong>online feature stores</strong> and <strong>prediction logs</strong>: lookups by key at low latency, huge write volume, availability over perfect freshness.
+  A model reading features at serving time gets "usually fresh" data. If a feature must reflect a write the same request just made, that's read-your-writes, and you design for it explicitly (read the source of truth,
+  or pass the value along with the request). The same checklist applies when an agent proposes a vector store, a cache or a metadata database for your ML platform.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>A reviewer's checklist for any data layer</h2>
+
+<p>Your mission includes judging architectures that coding agents produce. Phase 2 boils down to these questions. When a design can't answer one, you've found the weak spot.</p>
+
+<div class="table-wrap wide">
+<table>
+  <thead><tr><th>Ask</th><th>Good answers sound like</th><th>From</th></tr></thead>
+  <tbody>
+    <tr><td>What are the access patterns, and does the data model fit them?</td><td>"Mostly lookups by user; a tree per user; few relationships"</td><td>0011</td></tr>
+    <tr><td>Write-heavy or read-heavy? Which storage engine?</td><td>"Write-heavy event log → LSM; relational metadata → B-tree"</td><td>0007</td></tr>
+    <tr><td>Do the indexes match the queries?</td><td>"Composite index (entity_id, ts): equality first, then range"</td><td>0008</td></tr>
+    <tr><td>Where is there check-then-act logic, and what stops races?</td><td>"Atomic conditional update / unique constraint / SERIALIZABLE + retry"</td><td>0009–0010</td></tr>
+    <tr><td>How do schema changes roll out with old and new code running together?</td><td>"New fields optional with defaults; never reuse field numbers"</td><td>0012</td></tr>
+    <tr><td>Sync or async replication? What's lost on failover? Who prevents split brain?</td><td>"Semi-sync; fencing or epoch numbers; failover runbook"</td><td>0013</td></tr>
+    <tr><td>What do users see during replication lag?</td><td>"Own profile read from leader; users pinned to a replica"</td><td>0014</td></tr>
+    <tr><td>Can two writers conflict? How are conflicts resolved?</td><td>"Single writer per key; or version vectors with a merge; not blind LWW"</td><td>0015</td></tr>
+    <tr><td>Shard key? Hot keys? Cross-shard queries and transactions?</td><td>"Tenant ID; big tenants split out; reports via the warehouse"</td><td>0016</td></tr>
+    <tr><td>What happens when a node is added or removed?</td><td>"Fixed partitions or vnodes, never % N; rebalance with human approval"</td><td>0016–0017</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">07</span>Phase 2 in five lines</h2>
+
+<ol>
+  <li><strong>On one machine:</strong> LSM-trees for writes, B-trees for reads; indexes shaped by the queries; transactions with an isolation level you've chosen on purpose, not the default by accident.</li>
+  <li><strong>Data shape:</strong> choose the model by its relationships; evolve schemas so old and new code can both read the data.</li>
+  <li><strong>Copies:</strong> single-leader is simplest; async replication lags and can lose acknowledged writes; leaderless trades order for availability and needs conflict handling.</li>
+  <li><strong>Splits:</strong> shard by the key most queries use, watch for hot keys, never use <code>% N</code>, and accept that cross-shard work costs more.</li>
+  <li>A Dynamo-style key-value store combines all of these, and every part comes with a stated trade-off. That's the level of answer interviewers want.</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="2">
+      <p class="q">In the key-value store, what handles a replica that's down for a few minutes?</p>
+      <div class="opts">
+        <button>a Merkle tree comparison across every single replica</button>
+        <button>an automatic failover that promotes a new leader</button>
+        <button>a sloppy quorum on stand-ins, then hinted handoff</button>
+        <button>a two-phase commit that waits for the replica</button>
+      </div>
+      <p class="why">Temporary failures: a stand-in node keeps the write with a hint and hands it back later. Merkle trees are for permanent divergence.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Why is there no failover step in this design?</p>
+      <div class="opts">
+        <button>there is no leader; any replica accepts writes</button>
+        <button>every write waits for all replicas, none lag</button>
+        <button>gossip promotes a new leader within one second</button>
+        <button>the coordinator stores every key on its disk</button>
+      </div>
+      <p class="why">Leaderless replication: writes go to all n replicas and need only w acknowledgements, so a dead node doesn't need replacing as leader.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">Which requirement would push you away from this design toward a relational database?</p>
+      <div class="opts">
+        <button>very high write throughput across many separate datacenters</button>
+        <button>lookups by key with values under 10 KB</button>
+        <button>staying available while a few nodes are down</button>
+        <button>multi-row transactions with joins across several related tables</button>
+      </div>
+      <p class="why">This store has no cross-key transactions or joins. The other three are exactly what it's built for.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">What happens on each replica when it receives a write?</p>
+      <div class="opts">
+        <button>it overwrites the matching B-tree page in place</button>
+        <button>it appends to its commit log, then memtable</button>
+        <button>it writes straight into the oldest SSTable file</button>
+        <button>it sends the write to ZooKeeper for ordering</button>
+      </div>
+      <p class="why">The LSM write path from lesson 0007: log first for crash safety, memtable for speed, flushed later as an SSTable.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">An agent's design says "Cassandra with QUORUM reads and writes, so balances are strongly consistent." What's the flaw?</p>
+      <div class="opts">
+        <button>QUORUM is slower than reading one replica</button>
+        <button>Cassandra cannot store numeric balances in columns</button>
+        <button>quorums aren't guarantees; balances need transactions too</button>
+        <button>QUORUM requires an even number of replicas</button>
+      </div>
+      <p class="why">Quorums make reads usually fresh, but LWW, sloppy quorums and partial writes break the guarantee, and "check balance, then spend" needs real isolation.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Xu, Ch. 6, "Design a Key-Value Store"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=87">pp. 87–109</a>). Read it start to finish now: after Phase 2 every page should feel familiar, and you'll notice where it simplifies.</li>
+    <li>Optional, for the original: the <a href="https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf"><strong>Dynamo paper</strong></a> (DeCandia et al., SOSP 2007, "Dynamo: Amazon's Highly Available Key-value Store"), cited by both books, which most of this design comes from.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick references: <a href="../../reference/storage-engines.html">Storage engines</a> · <a href="../../reference/replication.html">Replication</a> · <a href="../../reference/sharding.html">Sharding</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0017-consistent-hashing.html">← 0017 · Consistent hashing</a>
+  <span class="disabled">Next: Phase 3 · Caching (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>
