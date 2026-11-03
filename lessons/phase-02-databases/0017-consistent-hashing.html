@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consistent Hashing</title>
+<link rel="stylesheet" href="../../assets/course.css">
+<script src="../../assets/course.js"></script>
+<script src="../../assets/shard-widgets.js"></script>
+</head>
+<body>
+<main class="page">
+
+<nav class="crumbs">
+  <a href="../../index.html">Course index</a> <span>/</span>
+  <span>Phase 2 · Databases in depth</span> <span>/</span>
+  <span>Lesson 0017</span>
+</nav>
+
+<p class="kicker">Phase 2.3 · Sharding (part 2)</p>
+<h1>Consistent hashing: the ring, virtual nodes, and why only 1/N of keys move</h1>
+<p class="subtitle">The roadmap says this "deserves serious attention", and interviewers agree. It's the standard answer to "how do you add a cache or database server without reshuffling everything?" Here it is step by step, including the parts the usual explanation leaves out.</p>
+
+<div class="meta">
+  <span><b>Reading time</b> ~18 min</span>
+  <span><b>Main sources</b> Alex Xu Ch. 5 "Design Consistent Hashing" · DDIA Ch. 6 (consistent hashing side note, rebalancing)</span>
+  <span><b>Roadmap topics</b> consistent hashing · hash ring · virtual nodes · rebalancing · hot keys</span>
+</div>
+
+<div class="win">
+  <span class="label">What you'll be able to do</span>
+  Draw the hash ring from memory. Explain which keys move when a server joins or leaves, and why only about 1/N do. Say what virtual nodes fix and what they cost, place replicas on the
+  ring, and state honestly what consistent hashing does <em>not</em> solve.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">01</span>The problem: <code>hash % N</code> reshuffles everything</h2>
+
+<aside class="side">
+  <span class="src">Xu, "The rehashing problem", Figs. 5-1, 5-2 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=72">pp. 72–74</a>
+</aside>
+
+<p>Xu starts with cache servers: <code>serverIndex = hash(key) % N</code>. It's even and simple, until N changes. If server 1 of 4 dies, every key is recomputed with <code>% 3</code>, and
+"most keys are redistributed, not just the ones originally stored in the offline server." For a cache that means "a storm of cache misses": almost every lookup goes to a server that doesn't
+have the data, and the database behind the cache takes the full load at once. <a href="0016-sharding.html">Lesson 0016</a>'s widget measured it: about N/(N+1) of keys move. We want
+only the keys that <em>have</em> to move to move.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">02</span>The ring</h2>
+
+<aside class="side">
+  <span class="src">Xu, "Hash space and hash ring" to "Remove a server", Figs. 5-3 to 5-9 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=75">pp. 75–78</a>
+</aside>
+
+<ol>
+  <li><strong>Bend the hash space into a circle.</strong> A hash function outputs numbers from 0 to a maximum (SHA-1: 0 to 2<sup>160</sup> − 1). Join the two ends.</li>
+  <li><strong>Put servers on the ring</strong> by hashing their name or IP. There's no <code>% N</code> anywhere.</li>
+  <li><strong>Put keys on the ring</strong> with the same hash. A key belongs to the <strong>first server clockwise</strong> from it.</li>
+</ol>
+
+<p>Now see what a change costs. <strong>Adding</strong> server s4 takes over only the arc between it and the server just before it (anticlockwise); every other key keeps its server.
+<strong>Removing</strong> s1 hands only s1's keys to the next server clockwise. On average about <strong>k/n</strong> keys move (k keys, n servers), which is the minimum possible.
+To find exactly which keys are affected, walk <em>anticlockwise</em> from the changed server to the previous server; that arc is the one that changes hands.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">03</span>Two flaws of the basic ring, and virtual nodes</h2>
+
+<aside class="side">
+  <span class="src">Xu, "Two issues in the basic approach" and "Virtual nodes", Figs. 5-10 to 5-13 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=79">pp. 79–82</a>
+</aside>
+
+<p>With one point per server, positions are random, so:</p>
+<ul>
+  <li><strong>Arcs are uneven.</strong> One server may own a tiny slice and another a huge one. Xu's Fig. 5-11 shows most keys on server 2 while servers 1 and 3 hold nothing.</li>
+  <li><strong>Removal dumps everything on one neighbour.</strong> When s1 leaves, its whole arc goes to s2, which can suddenly have twice its fair share.</li>
+</ul>
+
+<p>The fix is <strong>virtual nodes</strong>: each physical server gets many points on the ring (<code>s0_0, s0_1, s0_2…</code>) and owns many small arcs scattered around it. Averages smooth out
+the randomness. The experiment Xu cites found the spread of load (standard deviation) was about <strong>10% of the mean with 100 virtual nodes and 5% with 200</strong>. When a server leaves, its
+many small arcs are taken over by <em>many</em> different servers. A bonus: give a bigger machine more virtual nodes and it takes proportionally more load (Xu calls this heterogeneity). The cost is
+more metadata to store and keep in sync.</p>
+
+<div class="figure wide">
+  <div class="ring-sim"></div>
+  <div class="caption">3,000 keys (140 drawn). Ticks are server points, dots are keys. Try it with 1 virtual node: note the uneven shares, then remove s1 and watch one neighbour take everything. Then switch to
+  200 virtual nodes and repeat. "Keys moved" stays near 1/N either way; what changes is how <em>evenly</em> load is shared.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">04</span>Replicas on the ring</h2>
+
+<aside class="side">
+  <span class="src">Xu, Ch. 6, "Data partition" and "Data replication", Figs. 6-4, 6-5 —</span>
+  <a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=93">pp. 93–94</a>
+</aside>
+
+<p>The ring also decides where copies go, which is how Dynamo-style stores (<a href="0015-multi-leader-and-leaderless.html">0015</a>) choose a key's n replicas. From the key's position, walk
+clockwise and take the first <strong>n distinct physical servers</strong>. You skip extra virtual nodes of a server already chosen, otherwise two "replicas" could be the same machine. For
+safety, Xu also places replicas in <strong>different datacenters</strong>, because machines in one datacenter often fail together.</p>
+
+<!-- ============================================================ -->
+<h2><span class="num">05</span>What the usual explanation leaves out</h2>
+
+<aside class="side">
+  <span class="src">DDIA, "Consistent Hashing" box and "Partitioning proportionally to nodes" —</span>
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=226">pp. 204, 212–213</a>;
+  DDIA, "Skewed Workloads" —
+  <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=227">p. 205</a>
+</aside>
+
+<div class="callout trap">
+  <span class="label">It doesn't fix a hot key</span>
+  <p>Xu lists "mitigate hotspot key problem" as a benefit (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=85">p. 85</a>). That's true only for <em>several</em> hot keys
+  that would otherwise land together; the ring spreads different keys. A <em>single</em> celebrity key still hashes to one point and therefore one server. As Kleppmann puts it, "the hash of two identical
+  IDs is still the same." You still need the fixes from <a href="0016-sharding.html">0016</a>: split the key, give it a dedicated server, or cache it.</p>
+</div>
+
+<p><strong>The name is used loosely.</strong> Kleppmann notes that consistent hashing was defined (Karger et al.) for spreading load across internet-wide caches such as CDNs, and that "consistent" here has
+nothing to do with replica or ACID consistency. For databases he says the literal algorithm "doesn't work very well", that documentation using the term "is often inaccurate", and that it's clearer to
+say <em>hash partitioning</em>. What databases actually run is closest to his third rebalancing scheme: Cassandra gives each node <strong>256 random points</strong> (tokens) by default, so a new node
+takes slices from many existing nodes. That's virtual nodes under another name.</p>
+
+<p><strong>Where it's used</strong>, per Xu: Amazon Dynamo's partitioning, Cassandra, Discord, Akamai's CDN, and Google's Maglev load balancer. DDIA adds Ketama, a widely used library for
+distributing cache keys. The common thread is <em>many independent clients agreeing on which server owns a key, without a central lookup table, while servers come and go</em>.</p>
+
+<div class="callout ml">
+  <span class="label">In your world</span>
+  <p>Any time you spread a <strong>cache</strong> across replicas (an embedding cache, a feature cache, a cache of model outputs), consistent hashing on the cache key means scaling from 8 to 9 pods
+  invalidates about 1/9 of the cache instead of almost all of it. That avoids a burst of misses hitting your feature store or GPU fleet right when you added capacity because load was high. The same
+  idea, "send requests with the same key to the same replica so its cache is warm", shows up in LLM serving when requests that share a prompt prefix are routed together
+  <span class="badge later">Phase 13</span>.</p>
+</div>
+
+<div class="callout key">
+  <span class="label">The 60-second interview version</span>
+  <p>"Modulo hashing remaps almost every key when the server count changes. Instead, hash servers and keys onto a ring; a key belongs to the next server clockwise. Adding or removing a server moves only
+  the neighbouring arc, about 1/N of the keys. Random positions give uneven arcs, so each server gets ~100–200 virtual nodes, which evens out the load, spreads a dead server's keys across all survivors, and
+  lets bigger machines take more. Replicas are the next N distinct servers clockwise, in different zones. It doesn't fix a single hot key; that needs splitting or caching."</p>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="num">06</span>The page in five lines</h2>
+
+<ol>
+  <li><code>hash % N</code> moves about N/(N+1) of keys on any resize, which means a cache-miss storm. Consistent hashing moves about 1/N.</li>
+  <li>Ring: hash servers and keys into one circular space; a key goes to the first server clockwise. A change only affects the arc back to the previous server.</li>
+  <li>Basic ring: uneven arcs, and a dead server dumps everything on one neighbour. <strong>Virtual nodes</strong> (100–200 per server): even load, spread-out failover, weighting by capacity.</li>
+  <li>Replicas: the next n <em>distinct physical</em> servers clockwise, ideally in different zones.</li>
+  <li>It does not fix a single hot key. In databases it's really "hash partitioning with many random tokens per node" (Cassandra: 256).</li>
+</ol>
+
+<details class="recall">
+  <summary>Optional: 30-second recall check <small>5 questions · click to open · not graded</small></summary>
+  <div class="recall-body">
+
+    <div class="mcq" data-answer="1">
+      <p class="q">On a hash ring, which server stores a key?</p>
+      <div class="opts">
+        <button>the server whose hash is numerically closest to it</button>
+        <button>the first server found going clockwise from the key</button>
+        <button>the server chosen by the key's hash modulo N</button>
+        <button>the server with the fewest keys at that moment</button>
+      </div>
+      <p class="why">Walk clockwise from the key's position; the first server point you meet owns it.</p>
+    </div>
+
+    <div class="mcq" data-answer="3">
+      <p class="q">A new server joins the ring. Which keys move to it?</p>
+      <div class="opts">
+        <button>about N/(N+1) of all keys in the cluster</button>
+        <button>every key previously stored on its clockwise neighbour</button>
+        <button>a random sample chosen to rebalance every server</button>
+        <button>keys between it and the previous server anticlockwise</button>
+      </div>
+      <p class="why">Only the arc from the previous server up to the new one changes owner, about 1/N of keys.</p>
+    </div>
+
+    <div class="mcq" data-answer="0">
+      <p class="q">Why add virtual nodes when keys already move minimally?</p>
+      <div class="opts">
+        <button>to even out load and spread a failed server's keys</button>
+        <button>to make sure no key ever has to move again</button>
+        <button>to let a single hot key be split across servers</button>
+        <button>to remove the need for any hash function at all</button>
+      </div>
+      <p class="why">Many small arcs per server average out random placement; a removed server's arcs go to many different successors.</p>
+    </div>
+
+    <div class="mcq" data-answer="2">
+      <p class="q">With virtual nodes, how do you pick three replicas for a key?</p>
+      <div class="opts">
+        <button>the next three virtual nodes clockwise, whatever their server is</button>
+        <button>three servers chosen fully at random from the entire cluster</button>
+        <button>the next three distinct physical servers clockwise from the key</button>
+        <button>the three servers with the most free disk space available</button>
+      </div>
+      <p class="why">Skip extra virtual nodes of an already chosen server, otherwise two replicas could be the same machine.</p>
+    </div>
+
+    <div class="mcq" data-answer="1">
+      <p class="q">A single viral post's key gets millions of reads. Does consistent hashing fix this?</p>
+      <div class="opts">
+        <button>yes, the ring spreads that key's requests across servers</button>
+        <button>no, one key always hashes to one server's arc</button>
+        <button>yes, virtual nodes replicate hot keys to every server</button>
+        <button>no, because consistent hashing only ever works for caches</button>
+      </div>
+      <p class="why">Identical keys have identical hashes. Hot single keys need splitting, dedicated servers, or caching.</p>
+    </div>
+
+  </div>
+</details>
+
+<div class="source-box">
+  <span class="label">Primary source for this lesson</span>
+  <ul>
+    <li><strong>Xu, Ch. 5, "Design Consistent Hashing"</strong>
+      (<a href="../../resources/System%20Design%20Interview%20by%20Alex%20Xu.pdf#page=71">pp. 71–86</a>). Short and full of diagrams, the clearest version of the ring there is.</li>
+    <li>Then: <strong>DDIA, Ch. 6, "Consistent Hashing" box and "Rebalancing Partitions"</strong>
+      (<a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=226">p. 204</a>,
+      <a href="../../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=231">pp. 209–214</a>) for the more careful view.</li>
+  </ul>
+  <p style="margin:10px 0 0;font-size:15px;color:var(--ink-3)">Quick reference: <a href="../../reference/sharding.html">Sharding cheat sheet</a></p>
+</div>
+
+<div class="ask-box">
+  <span class="label">Stuck on anything?</span>
+  Ask me. "Why" questions and "what about my case" questions are welcome. For a quick definition, ask and I'll add it to <code>glossary.md</code>.
+</div>
+
+<nav class="pager">
+  <a href="0016-sharding.html">← 0016 · Sharding</a>
+  <span class="disabled">Next: 0018 · Phase 2 wrap-up lecture (coming next)</span>
+</nav>
+
+</main>
+</body>
+</html>

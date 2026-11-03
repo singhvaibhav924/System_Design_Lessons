@@ -21,7 +21,7 @@
 
 <p class="kicker">Reference · Phase 2 (sharding)</p>
 <h1>Sharding</h1>
-<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0016-sharding.html">Lesson 0016</a>. Lesson 0017 will add consistent hashing. Sources: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=221">DDIA Ch. 6</a>, Xu Ch. 1.</p>
+<p class="subtitle">The short version of <a href="../lessons/phase-02-databases/0016-sharding.html">Lesson 0016</a>. Consistent hashing: <a href="../lessons/phase-02-databases/0017-consistent-hashing.html">Lesson 0017</a>. Sources: <a href="../resources/Designing%20Data%20Intensive%20Applications%20by%20Martin%20Kleppmann.pdf#page=221">DDIA Ch. 6</a>, Xu Ch. 1.</p>
 
 <div class="card-grid wide">
   <div class="card"><h3>Sharding = partitioning</h3><p>Each record in exactly one partition (shard / region / tablet / vnode), partitions on different nodes, each replicated. Scales data and load. Shard last: scale up and partition vertically (by feature) first.</p><p class="from">DDIA pp. 199–201 · Xu p. 28</p></div>
@@ -34,6 +34,13 @@
   <div class="card"><h3>Rebalancing</h3><p>Never hash % N (moves ~N/(N+1) of keys). Fixed many partitions per cluster (Riak, ES) · dynamic split/merge (HBase 10 GB, pre-split) · fixed partitions per node (Cassandra 256). Prefer human-approved moves.</p><p class="from">DDIA pp. 209–214</p></div>
   <div class="card"><h3>Request routing</h3><p>Any node forwards · routing tier · partition-aware client. Learn assignments via coordination service (ZooKeeper; MongoDB config servers + mongos) or gossip (Cassandra, Riak).</p><p class="from">DDIA pp. 214–216</p></div>
   <div class="card"><h3>Costs</h3><p>Cross-shard joins → denormalize (Xu). Cross-shard transactions → 2PC (Phase 5), slow. Global indexes lag. Rule: shard by what most queries/transactions filter on; check hot keys and time-ordered writes.</p><p class="from">Xu p. 30 · DDIA p. 216</p></div>
+  <div class="card"><h3>Rehashing problem</h3><p>Cache servers with hash % N: one server change remaps most keys → cache-miss storm on the database.</p><p class="from">Xu pp. 72–74</p></div>
+  <div class="card"><h3>Hash ring</h3><p>Join hash space ends (SHA-1: 0…2¹⁶⁰−1). Hash servers (name/IP) and keys onto it; key → first server clockwise. No modulo.</p><p class="from">Xu pp. 75–77</p></div>
+  <div class="card"><h3>Add / remove</h3><p>Only the arc between the changed server and its anticlockwise predecessor moves: ~k/n keys. Removed server's keys → next server clockwise.</p><p class="from">Xu pp. 77–78, 82–83</p></div>
+  <div class="card"><h3>Virtual nodes</h3><p>Many points per server: even load (std dev ≈10% of mean @100, ≈5% @200), failed server's arcs spread over many survivors, bigger machines get more points. Cost: metadata.</p><p class="from">Xu pp. 79–82</p></div>
+  <div class="card"><h3>Replicas on the ring</h3><p>Walk clockwise, take first n <b>distinct physical</b> servers; spread across datacenters.</p><p class="from">Xu p. 94</p></div>
+  <div class="card"><h3>Caveats</h3><p>Doesn't fix a single hot key (same key → same hash). In DBs the term is loose; DDIA prefers “hash partitioning”; Cassandra = 256 random tokens per node.</p><p class="from">DDIA pp. 204–205, 213</p></div>
+  <div class="card"><h3>Used by</h3><p>Dynamo, Cassandra, Discord, Akamai CDN, Maglev LB, Ketama (memcached clients). Sharded caches: resize invalidates only ~1/N.</p><p class="from">Xu p. 85 · DDIA p. 213</p></div>
 </div>
 </main>
 </body>
